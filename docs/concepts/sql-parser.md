@@ -35,8 +35,8 @@ SELECT  name  FROM  cards  WHERE  power  >  50
 KEYWORD IDENT KEYWORD IDENT KEYWORD IDENT OP  NUM
 ```
 
-This is exactly like what the Pebble lexer does! Each token knows its
-type (keyword, identifier, number, operator) and its value.
+Each token knows its type (keyword, identifier, number, operator) and
+its value.
 
 ### Step 2: Parser (understanding the sentence)
 

@@ -47,18 +47,20 @@ class Transaction:
 
     """
 
-    __slots__ = ("_database", "_finished", "_snapshots")
+    __slots__ = ("_database", "_finished", "_original_table_names", "_snapshots")
 
     def __init__(self, database: Database) -> None:
         """Begin a transaction by snapshotting all tables."""
         self._database = database
         self._finished = False
         self._snapshots: dict[str, _TableSnapshot] = {}
+        self._original_table_names: frozenset[str] = frozenset()
         self._take_snapshots()
 
     def _take_snapshots(self) -> None:
         """Snapshot every table's current state."""
-        for name in self._database.table_names():
+        self._original_table_names = frozenset(self._database.table_names())
+        for name in self._original_table_names:
             table = self._database.get_table(name)
             # Deep-copy records so in-place mutations (update_fields) don't
             # affect the snapshot.
@@ -110,6 +112,7 @@ class Transaction:
         self._check_active()
         self._finished = True
 
+        # Restore snapshotted tables.
         for snapshot in self._snapshots.values():
             restored = Table.from_stored(
                 name=snapshot.name,
@@ -118,6 +121,11 @@ class Transaction:
                 next_id=snapshot.next_id,
             )
             self._database.replace_table(restored)
+
+        # Remove tables created during the transaction.
+        current_names = set(self._database.table_names())
+        for name in current_names - self._original_table_names:
+            self._database.drop_table(name)
 
         self._snapshots.clear()
 

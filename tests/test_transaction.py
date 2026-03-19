@@ -176,3 +176,17 @@ class TestMultipleTables:
 
         assert db.get_table("table_a").row_count == 1
         assert db.get_table("table_b").row_count == 1
+
+    def test_rollback_removes_table_created_during_txn(self, tmp_path: Path) -> None:
+        """Rollback should remove tables that were created during the transaction."""
+        db = _make_db(tmp_path)
+        txn = Transaction(db)
+        new_schema = Schema(
+            columns=[
+                Column(name="val", data_type=DataType.INTEGER),
+            ]
+        )
+        db.create_table("new_table", new_schema)
+        assert "new_table" in db.table_names()
+        txn.rollback()
+        assert "new_table" not in db.table_names()

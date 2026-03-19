@@ -88,6 +88,14 @@ class TestDotCommands:
         assert result is not None
         assert "not found" in result
 
+    def test_save_command(self, tmp_path: Path) -> None:
+        """.save should save tables and return a confirmation message."""
+        db = _make_db(tmp_path)
+        result = _handle_dot_command(".save", db)
+        assert result is not None
+        assert "saved" in result
+        assert (tmp_path / "cards.json").exists()
+
     def test_unknown_command(self, tmp_path: Path) -> None:
         """An unknown dot command should return an error."""
         db = _make_db(tmp_path)

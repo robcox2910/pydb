@@ -118,7 +118,9 @@ class Table:
             A list of matching records, ordered by ID.
 
         """
-        records = sorted(self._records.values(), key=lambda r: r.record_id)
+        # Dict preserves insertion order in Python 3.7+, and IDs are
+        # assigned sequentially, so no sort is needed.
+        records = list(self._records.values())
         if where is None:
             return records
         return [r for r in records if where(r)]

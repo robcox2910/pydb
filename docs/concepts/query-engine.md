@@ -29,14 +29,14 @@ your tables.
 A query is a Python object that describes what you want:
 
 ```python
-from pydb.query import Query, Condition, OrderBy
+from pydb.query import Query, Condition, Operator, OrderBy
 
 query = Query(
     table="cards",
-    columns=["name", "power"],           # What columns to show
-    where=Condition("power", ">", 50),   # Which rows match
-    order_by=OrderBy("name"),            # What order
-    limit=3,                             # How many
+    columns=["name", "power"],                    # What columns to show
+    where=Condition("power", Operator.GT, 50),    # Which rows match
+    order_by=OrderBy("name"),                     # What order
+    limit=3,                                      # How many
 )
 ```
 
@@ -68,10 +68,12 @@ A condition is a simple rule: **column**, **operator**, **value**.
 You can also combine conditions:
 
 ```python
+from pydb.query import And, Condition, Operator
+
 # Power > 50 AND type = "Electric"
 where = And(
-    Condition("power", ">", 50),
-    Condition("type", "=", "Electric"),
+    Condition("power", Operator.GT, 50),
+    Condition("type", Operator.EQ, "Electric"),
 )
 ```
 
@@ -111,5 +113,5 @@ there, you just choose which parts to show.
 
 Writing queries as Python objects works, but wouldn't it be nicer to
 just type `SELECT name, power FROM cards WHERE power > 50`? That's what
-the **SQL parser** does -- head there next to learn how we turn text
-into query objects.
+the **SQL parser** does -- head to [SQL Parser](sql-parser.md) to learn
+how we turn text into query objects.

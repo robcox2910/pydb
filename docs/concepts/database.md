@@ -62,19 +62,18 @@ scores = db2.get_table("high_scores")
 
 ## The Catalog
 
-The database maintains a **catalog** -- a list of all table names and their
-schemas. This is saved as a special file called `catalog.json` in the data
-directory:
+The database keeps a **catalog** in memory -- a list of which tables exist.
+When you call `save()`, each table gets its own `.json` file:
 
 ```
 my_game_db/
-├── catalog.json        ← knows which tables exist
 ├── high_scores.json    ← table data
 └── players.json        ← table data
 ```
 
-Think of the catalog as the **index card pinned to the door** of the
-collection room. Before you walk in, you can check what's inside.
+When you call `load()`, the database scans the directory, reads every
+`.json` file, and rebuilds its catalog automatically. Think of it like
+walking into the collection room and reading the labels on each binder.
 
 ## What We Test
 
@@ -90,5 +89,4 @@ collection room. Before you walk in, you can check what's inside.
 ## Next Up
 
 We now have a fully persistent database! The next big frontier is making it
-*fast* -- head to the index concepts to learn about B-trees, or jump to the
-query engine to learn how SQL works.
+*fast*. Head to [Indexes](indexes.md) to learn about B-trees.

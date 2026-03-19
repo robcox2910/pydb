@@ -54,6 +54,9 @@ def _value_from_json(raw: str | int | float | bool, data_type: DataType) -> Valu
             if not isinstance(raw, bool):
                 return bool(raw)
             return raw
+        case _:  # pragma: no cover
+            msg = f"Unsupported data type: {data_type}"
+            raise SerializationError(msg)
 
 
 def serialize_schema(schema: Schema) -> dict[str, Any]:

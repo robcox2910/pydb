@@ -75,13 +75,14 @@ class Schema:
 
         """
         # Check for unknown columns.
-        unknown = set(values.keys()) - set(self._column_map.keys())
+        schema_cols = set(self._column_map)
+        unknown = set(values.keys()) - schema_cols
         if unknown:
             msg = f"Unknown column(s): {', '.join(sorted(unknown))}"
             raise SchemaError(msg)
 
         # Check for missing columns.
-        missing = set(self._column_map.keys()) - set(values.keys())
+        missing = schema_cols - set(values.keys())
         if missing:
             msg = f"Missing required column(s): {', '.join(sorted(missing))}"
             raise SchemaError(msg)

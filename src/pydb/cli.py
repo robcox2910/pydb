@@ -6,14 +6,13 @@ Type SQL, see results. Type dot commands for meta-operations.
 
 import sys
 
-from pydb.database import Database
+from pydb.database import Database, DatabaseError
 from pydb.executor import QueryError, execute
 from pydb.formatter import format_results
 from pydb.sql_parser import ParseError, parse_sql
 from pydb.sql_tokenizer import TokenizerError
 
 PROMPT = "pydb> "
-CONTINUE_PROMPT = "   ...> "
 
 HELP_TEXT = """
 PyDB -- an educational database engine
@@ -77,7 +76,7 @@ def _handle_schema(arg: str, database: Database) -> str:
         return "Usage: .schema <table_name>"
     try:
         table = database.get_table(arg)
-    except Exception:  # noqa: BLE001
+    except DatabaseError:
         return f"Table {arg!r} not found"
     lines = [
         f"Table: {table.name}",

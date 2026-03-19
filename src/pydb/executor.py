@@ -14,7 +14,7 @@ from typing import Any
 
 from pydb.database import Database
 from pydb.errors import PyDBError
-from pydb.query import And, Condition, Or, Query, SortDirection
+from pydb.query import Condition, Query, SortDirection, WhereClause
 from pydb.record import Record, Value
 
 
@@ -45,8 +45,9 @@ def execute(query: Query, database: Database) -> list[dict[str, Value]]:
         raise QueryError(msg) from exc
 
     # Step 2: Filter rows.
+    valid_cols = set(table.schema.column_names)
     if query.where is not None:
-        _validate_where_columns(query.where, table.schema.column_names)
+        _validate_where_columns(query.where, valid_cols)
         records = table.select(where=query.where.matches)
     else:
         records = table.select()
@@ -54,7 +55,7 @@ def execute(query: Query, database: Database) -> list[dict[str, Value]]:
     # Step 3: Sort.
     if query.order_by is not None:
         col = query.order_by.column
-        if col not in table.schema.column_names:
+        if col not in valid_cols:
             msg = f"Cannot order by unknown column {col!r}"
             raise QueryError(msg)
         reverse = query.order_by.direction == SortDirection.DESC
@@ -68,12 +69,12 @@ def execute(query: Query, database: Database) -> list[dict[str, Value]]:
     return _project(records, query.columns, table.schema.column_names)
 
 
-def _validate_where_columns(clause: Any, valid_columns: list[str]) -> None:
+def _validate_where_columns(clause: WhereClause, valid_columns: set[str]) -> None:
     """Recursively validate that all columns in a WHERE clause exist.
 
     Args:
         clause: A Condition, And, or Or object.
-        valid_columns: The table's column names.
+        valid_columns: The table's column names as a set.
 
     Raises:
         QueryError: If a column in the clause doesn't exist.
@@ -83,7 +84,7 @@ def _validate_where_columns(clause: Any, valid_columns: list[str]) -> None:
         if clause.column not in valid_columns:
             msg = f"Unknown column {clause.column!r} in WHERE clause"
             raise QueryError(msg)
-    elif isinstance(clause, And | Or):
+    else:
         _validate_where_columns(clause.left, valid_columns)
         _validate_where_columns(clause.right, valid_columns)
 

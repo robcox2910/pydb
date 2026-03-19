@@ -72,6 +72,8 @@ class Condition:
                 return record_value < target
             case Operator.LE:
                 return record_value <= target
+        msg = f"Unknown operator: {self.operator}"
+        raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
