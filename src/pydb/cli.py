@@ -9,6 +9,7 @@ import sys
 from pydb.database import Database, DatabaseError
 from pydb.executor import QueryError, execute
 from pydb.formatter import format_results
+from pydb.query import Query
 from pydb.sql_parser import ParseError, parse_sql
 from pydb.sql_tokenizer import TokenizerError
 
@@ -19,6 +20,11 @@ PyDB -- an educational database engine
 
 SQL commands:
   SELECT columns FROM table [WHERE ...] [ORDER BY ...] [LIMIT n]
+  CREATE TABLE name (col TYPE, ...)
+  INSERT INTO table [(col, ...)] VALUES (val, ...)
+  UPDATE table SET col = val [WHERE ...]
+  DELETE FROM table [WHERE ...]
+  DROP TABLE name
 
 Dot commands:
   .tables          List all tables in the database
@@ -97,16 +103,17 @@ def _execute_sql(sql: str, database: Database) -> str:
 
     """
     try:
-        query = parse_sql(sql)
+        parsed = parse_sql(sql)
     except (ParseError, TokenizerError) as exc:
         return f"Parse error: {exc}"
 
     try:
-        results = execute(query, database)
+        results = execute(parsed, database)
     except QueryError as exc:
         return f"Query error: {exc}"
 
-    return format_results(results, columns=query.columns or None)
+    columns = parsed.columns if isinstance(parsed, Query) and parsed.columns else None
+    return format_results(results, columns=columns)
 
 
 def repl(database: Database) -> None:
