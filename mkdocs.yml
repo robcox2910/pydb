@@ -33,6 +33,7 @@ nav:
     - Database: concepts/database.md
     - Indexes: concepts/indexes.md
     - Query Engine: concepts/query-engine.md
+    - SQL Parser: concepts/sql-parser.md
 
 markdown_extensions:
   - admonition
