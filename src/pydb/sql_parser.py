@@ -1,14 +1,24 @@
-"""SQL parser -- turn tokens into Query objects.
+"""SQL parser -- turn tokens into Query and Statement objects.
 
 The parser reads tokens left-to-right and assembles them into the Query,
-Condition, And, Or, and OrderBy objects that the executor already
+Condition, And, Or, OrderBy, and Statement objects that the executor
 understands. It's like reading a sentence word by word and building up
 the meaning as you go.
 """
 
 from pydb.errors import PyDBError
 from pydb.query import And, Condition, Operator, Or, OrderBy, Query, SortDirection, WhereClause
+from pydb.record import Value
 from pydb.sql_tokenizer import Token, TokenType, tokenize
+from pydb.statements import (
+    CreateTableStatement,
+    DeleteStatement,
+    DropTableStatement,
+    InsertStatement,
+    Statement,
+    UpdateStatement,
+)
+from pydb.types import DataType
 
 
 class ParseError(PyDBError):
@@ -25,11 +35,21 @@ _OPERATOR_MAP: dict[str, Operator] = {
     "<=": Operator.LE,
 }
 
+# Mapping from SQL type names to DataType.
+_TYPE_MAP: dict[str, DataType] = {
+    "TEXT": DataType.TEXT,
+    "INTEGER": DataType.INTEGER,
+    "INT": DataType.INTEGER,
+    "FLOAT": DataType.FLOAT,
+    "BOOLEAN": DataType.BOOLEAN,
+    "BOOL": DataType.BOOLEAN,
+}
+
 
 class _Parser:
     """A recursive-descent parser for a subset of SQL.
 
-    Consumes tokens one at a time, building up a Query object.
+    Consumes tokens one at a time, building Query or Statement objects.
 
     Args:
         tokens: The token list from the tokenizer.
@@ -76,30 +96,52 @@ class _Parser:
             raise ParseError(msg)
         return token
 
-    def parse_select(self) -> Query:
+    def parse(self) -> Query | Statement:
+        """Parse any supported SQL statement.
+
+        Returns:
+            A Query (for SELECT) or Statement (for write operations).
+
+        Raises:
+            ParseError: If the SQL is malformed.
+
+        """
+        kw = self._peek()
+        if kw.token_type != TokenType.KEYWORD:
+            msg = f"Expected a SQL keyword, got {kw.token_type.value} ({kw.value!r})"
+            raise ParseError(msg)
+
+        match kw.value:
+            case "SELECT":
+                return self._parse_select()
+            case "CREATE":
+                return self._parse_create_table()
+            case "DROP":
+                return self._parse_drop_table()
+            case "INSERT":
+                return self._parse_insert()
+            case "UPDATE":
+                return self._parse_update()
+            case "DELETE":
+                return self._parse_delete()
+            case _:
+                msg = f"Unsupported statement: {kw.value}"
+                raise ParseError(msg)
+
+    def _parse_select(self) -> Query:
         """Parse a SELECT statement into a Query object.
 
         Grammar::
 
             SELECT columns FROM table [WHERE condition] [ORDER BY col [ASC|DESC]] [LIMIT n]
 
-        Returns:
-            A fully populated Query.
-
-        Raises:
-            ParseError: If the SQL is malformed.
-
         """
         self._expect(TokenType.KEYWORD, "SELECT")
+        columns = self._parse_select_columns()
 
-        # Parse columns.
-        columns = self._parse_columns()
-
-        # FROM table.
         self._expect(TokenType.KEYWORD, "FROM")
         table_name = self._expect(TokenType.IDENTIFIER).value
 
-        # Optional clauses.
         where: WhereClause | None = None
         order_by: OrderBy | None = None
         limit: int | None = None
@@ -113,8 +155,7 @@ class _Parser:
                 order_by = self._parse_order_by()
             elif kw.token_type == TokenType.KEYWORD and kw.value == "LIMIT":
                 self._advance()
-                limit_token = self._expect(TokenType.INTEGER)
-                limit = int(limit_token.value)
+                limit = int(self._expect(TokenType.INTEGER).value)
             else:
                 msg = f"Unexpected token: {kw.value!r}"
                 raise ParseError(msg)
@@ -127,40 +168,152 @@ class _Parser:
             limit=limit,
         )
 
-    def _parse_columns(self) -> list[str]:
-        """Parse the column list after SELECT.
+    def _parse_create_table(self) -> CreateTableStatement:
+        """Parse a CREATE TABLE statement.
 
-        Returns:
-            A list of column names, or an empty list for SELECT *.
+        Grammar::
+
+            CREATE TABLE name (col_name TYPE, ...)
 
         """
+        self._expect(TokenType.KEYWORD, "CREATE")
+        self._expect(TokenType.KEYWORD, "TABLE")
+        table_name = self._expect(TokenType.IDENTIFIER).value
+
+        self._expect(TokenType.LPAREN)
+        columns: list[tuple[str, DataType]] = []
+        columns.append(self._parse_column_def())
+
+        while self._peek().token_type == TokenType.COMMA:
+            self._advance()
+            columns.append(self._parse_column_def())
+
+        self._expect(TokenType.RPAREN)
+        return CreateTableStatement(table=table_name, columns=columns)
+
+    def _parse_column_def(self) -> tuple[str, DataType]:
+        """Parse a single column definition: name TYPE."""
+        col_name = self._expect(TokenType.IDENTIFIER).value
+        type_token = self._advance()
+
+        # Type names can be identifiers (INT, TEXT) or keywords (BOOLEAN).
+        type_name = type_token.value.upper()
+        if type_name not in _TYPE_MAP:
+            msg = f"Unknown column type: {type_token.value!r}"
+            raise ParseError(msg)
+
+        return col_name, _TYPE_MAP[type_name]
+
+    def _parse_drop_table(self) -> DropTableStatement:
+        """Parse a DROP TABLE statement.
+
+        Grammar::
+
+            DROP TABLE name
+
+        """
+        self._expect(TokenType.KEYWORD, "DROP")
+        self._expect(TokenType.KEYWORD, "TABLE")
+        table_name = self._expect(TokenType.IDENTIFIER).value
+        return DropTableStatement(table=table_name)
+
+    def _parse_insert(self) -> InsertStatement:
+        """Parse an INSERT INTO statement.
+
+        Grammar::
+
+            INSERT INTO table (col, ...) VALUES (val, ...)
+            INSERT INTO table VALUES (val, ...)
+
+        """
+        self._expect(TokenType.KEYWORD, "INSERT")
+        self._expect(TokenType.KEYWORD, "INTO")
+        table_name = self._expect(TokenType.IDENTIFIER).value
+
+        # Optional column list.
+        columns: list[str] = []
+        if self._peek().token_type == TokenType.LPAREN:
+            self._advance()
+            columns.append(self._expect(TokenType.IDENTIFIER).value)
+            while self._peek().token_type == TokenType.COMMA:
+                self._advance()
+                columns.append(self._expect(TokenType.IDENTIFIER).value)
+            self._expect(TokenType.RPAREN)
+
+        self._expect(TokenType.KEYWORD, "VALUES")
+        self._expect(TokenType.LPAREN)
+
+        values: list[Value] = [self._parse_value()]
+        while self._peek().token_type == TokenType.COMMA:
+            self._advance()
+            values.append(self._parse_value())
+
+        self._expect(TokenType.RPAREN)
+        return InsertStatement(table=table_name, columns=columns, values=values)
+
+    def _parse_update(self) -> UpdateStatement:
+        """Parse an UPDATE statement.
+
+        Grammar::
+
+            UPDATE table SET col = val, ... [WHERE condition]
+
+        """
+        self._expect(TokenType.KEYWORD, "UPDATE")
+        table_name = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.KEYWORD, "SET")
+
+        assignments: dict[str, Value] = {}
+        col = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.OPERATOR, "=")
+        assignments[col] = self._parse_value()
+
+        while self._peek().token_type == TokenType.COMMA:
+            self._advance()
+            col = self._expect(TokenType.IDENTIFIER).value
+            self._expect(TokenType.OPERATOR, "=")
+            assignments[col] = self._parse_value()
+
+        where: WhereClause | None = None
+        if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "WHERE":
+            self._advance()
+            where = self._parse_where()
+
+        return UpdateStatement(table=table_name, assignments=assignments, where=where)
+
+    def _parse_delete(self) -> DeleteStatement:
+        """Parse a DELETE FROM statement.
+
+        Grammar::
+
+            DELETE FROM table [WHERE condition]
+
+        """
+        self._expect(TokenType.KEYWORD, "DELETE")
+        self._expect(TokenType.KEYWORD, "FROM")
+        table_name = self._expect(TokenType.IDENTIFIER).value
+
+        where: WhereClause | None = None
+        if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "WHERE":
+            self._advance()
+            where = self._parse_where()
+
+        return DeleteStatement(table=table_name, where=where)
+
+    def _parse_select_columns(self) -> list[str]:
+        """Parse the column list after SELECT."""
         if self._peek().token_type == TokenType.STAR:
             self._advance()
             return []
 
-        columns: list[str] = []
-        columns.append(self._expect(TokenType.IDENTIFIER).value)
-
+        columns: list[str] = [self._expect(TokenType.IDENTIFIER).value]
         while self._peek().token_type == TokenType.COMMA:
-            self._advance()  # Skip comma.
+            self._advance()
             columns.append(self._expect(TokenType.IDENTIFIER).value)
-
         return columns
 
     def _parse_where(self) -> WhereClause:
-        """Parse a WHERE clause with AND/OR support.
-
-        Grammar::
-
-            where = condition ((AND | OR) condition)*
-
-        Left-to-right associativity, AND binds tighter than OR.
-        For simplicity we parse left-to-right without precedence.
-
-        Returns:
-            A Condition, And, or Or object.
-
-        """
+        """Parse a WHERE clause with AND/OR support."""
         left = self._parse_condition()
 
         while self._peek().token_type == TokenType.KEYWORD and self._peek().value in ("AND", "OR"):
@@ -171,16 +324,7 @@ class _Parser:
         return left
 
     def _parse_condition(self) -> Condition:
-        """Parse a single comparison condition.
-
-        Grammar::
-
-            condition = identifier operator value
-
-        Returns:
-            A Condition object.
-
-        """
+        """Parse a single comparison condition: column op value."""
         column = self._expect(TokenType.IDENTIFIER).value
         op_token = self._expect(TokenType.OPERATOR)
 
@@ -188,21 +332,12 @@ class _Parser:
             msg = f"Unknown operator: {op_token.value!r}"
             raise ParseError(msg)
 
-        operator = _OPERATOR_MAP[op_token.value]
-        value = self._parse_value()
+        return Condition(
+            column=column, operator=_OPERATOR_MAP[op_token.value], value=self._parse_value()
+        )
 
-        return Condition(column=column, operator=operator, value=value)
-
-    def _parse_value(self) -> str | int | float | bool:
-        """Parse a literal value (string, number, or boolean).
-
-        Returns:
-            The parsed Python value.
-
-        Raises:
-            ParseError: If the token is not a valid literal.
-
-        """
+    def _parse_value(self) -> Value:
+        """Parse a literal value (string, number, or boolean)."""
         token = self._advance()
 
         match token.token_type:
@@ -221,16 +356,7 @@ class _Parser:
                 raise ParseError(msg)
 
     def _parse_order_by(self) -> OrderBy:
-        """Parse an ORDER BY clause.
-
-        Grammar::
-
-            ORDER BY identifier [ASC | DESC]
-
-        Returns:
-            An OrderBy object.
-
-        """
+        """Parse an ORDER BY clause."""
         self._expect(TokenType.KEYWORD, "ORDER")
         self._expect(TokenType.KEYWORD, "BY")
         column = self._expect(TokenType.IDENTIFIER).value
@@ -243,16 +369,17 @@ class _Parser:
         return OrderBy(column=column, direction=direction)
 
 
-def parse_sql(sql: str) -> Query:
-    """Parse a SQL SELECT statement into a Query object.
+def parse_sql(sql: str) -> Query | Statement:
+    """Parse a SQL statement into a Query or Statement object.
 
-    This is the main entry point -- give it SQL text, get back a Query.
+    This is the main entry point -- give it SQL text, get back a
+    structured representation.
 
     Args:
         sql: The SQL text to parse.
 
     Returns:
-        A Query object ready for the executor.
+        A Query (for SELECT) or Statement (for write operations).
 
     Raises:
         ParseError: If the SQL is invalid.
@@ -261,4 +388,4 @@ def parse_sql(sql: str) -> Query:
     """
     tokens = tokenize(sql)
     parser = _Parser(tokens)
-    return parser.parse_select()
+    return parser.parse()
