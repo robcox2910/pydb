@@ -42,6 +42,15 @@ class Database:
         """Return the database directory path."""
         return self._path
 
+    def replace_table(self, table: Table) -> None:
+        """Replace a table in the catalog (used by transactions for rollback).
+
+        Args:
+            table: The table to insert or replace.
+
+        """
+        self._tables[table.name] = table
+
     def create_table(self, name: str, schema: Schema) -> Table:
         """Create a new table in the database.
 

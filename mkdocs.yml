@@ -34,6 +34,8 @@ nav:
     - Indexes: concepts/indexes.md
     - Query Engine: concepts/query-engine.md
     - SQL Parser: concepts/sql-parser.md
+    - Transactions: concepts/transactions.md
+    - REPL: concepts/repl.md
 
 markdown_extensions:
   - admonition
