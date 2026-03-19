@@ -8,6 +8,8 @@ the meaning as you go.
 
 from pydb.errors import PyDBError
 from pydb.query import (
+    AggFunc,
+    AggregateColumn,
     And,
     Condition,
     JoinClause,
@@ -43,6 +45,15 @@ _OPERATOR_MAP: dict[str, Operator] = {
     ">=": Operator.GE,
     "<": Operator.LT,
     "<=": Operator.LE,
+}
+
+# Aggregate function names.
+_AGG_FUNCS: dict[str, AggFunc] = {
+    "COUNT": AggFunc.COUNT,
+    "SUM": AggFunc.SUM,
+    "AVG": AggFunc.AVG,
+    "MIN": AggFunc.MIN,
+    "MAX": AggFunc.MAX,
 }
 
 # Mapping from SQL type names to DataType.
@@ -144,17 +155,20 @@ class _Parser:
         Grammar::
 
             SELECT columns FROM table [JOIN table ON col = col]
-                [WHERE condition] [ORDER BY col [ASC|DESC]] [LIMIT n]
+                [WHERE condition] [GROUP BY col, ...] [HAVING condition]
+                [ORDER BY col [ASC|DESC]] [LIMIT n]
 
         """
         self._expect(TokenType.KEYWORD, "SELECT")
-        columns = self._parse_select_columns()
+        columns, aggregates = self._parse_select_list()
 
         self._expect(TokenType.KEYWORD, "FROM")
         table_name = self._expect(TokenType.IDENTIFIER).value
 
         join: JoinClause | None = None
         where: WhereClause | None = None
+        group_by: list[str] = []
+        having: WhereClause | None = None
         order_by: OrderBy | None = None
         limit: int | None = None
 
@@ -165,6 +179,11 @@ class _Parser:
             elif kw.token_type == TokenType.KEYWORD and kw.value == "WHERE":
                 self._advance()
                 where = self._parse_where()
+            elif kw.token_type == TokenType.KEYWORD and kw.value == "GROUP":
+                group_by = self._parse_group_by()
+            elif kw.token_type == TokenType.KEYWORD and kw.value == "HAVING":
+                self._advance()
+                having = self._parse_where()
             elif kw.token_type == TokenType.KEYWORD and kw.value == "ORDER":
                 order_by = self._parse_order_by()
             elif kw.token_type == TokenType.KEYWORD and kw.value == "LIMIT":
@@ -177,8 +196,11 @@ class _Parser:
         return Query(
             table=table_name,
             columns=columns,
+            aggregates=aggregates,
             join=join,
             where=where,
+            group_by=group_by,
+            having=having,
             order_by=order_by,
             limit=limit,
         )
@@ -347,12 +369,68 @@ class _Parser:
             return f"{name}.{col}"
         return name
 
-    def _parse_select_columns(self) -> list[str]:
-        """Parse the column list after SELECT (supports dot notation)."""
+    def _parse_select_list(self) -> tuple[list[str], list[AggregateColumn]]:
+        """Parse the SELECT list (columns and/or aggregate functions).
+
+        Returns:
+            A tuple of (plain column names, aggregate columns).
+
+        """
         if self._peek().token_type == TokenType.STAR:
             self._advance()
-            return []
+            return [], []
 
+        columns: list[str] = []
+        aggregates: list[AggregateColumn] = []
+        self._parse_select_item(columns, aggregates)
+
+        while self._peek().token_type == TokenType.COMMA:
+            self._advance()
+            self._parse_select_item(columns, aggregates)
+
+        return columns, aggregates
+
+    def _parse_select_item(
+        self,
+        columns: list[str],
+        aggregates: list[AggregateColumn],
+    ) -> None:
+        """Parse one item in the SELECT list (column or aggregate)."""
+        token = self._peek()
+
+        # Check for aggregate function: KEYWORD followed by LPAREN.
+        if token.token_type == TokenType.KEYWORD and token.value in _AGG_FUNCS:
+            agg = self._parse_aggregate()
+            aggregates.append(agg)
+        else:
+            columns.append(self._parse_qualified_name())
+
+    def _parse_aggregate(self) -> AggregateColumn:
+        """Parse an aggregate function call like COUNT(*) or SUM(power)."""
+        func_token = self._advance()
+        func = _AGG_FUNCS[func_token.value]
+        self._expect(TokenType.LPAREN)
+
+        if self._peek().token_type == TokenType.STAR:
+            self._advance()
+            col = "*"
+        else:
+            col = self._parse_qualified_name()
+
+        self._expect(TokenType.RPAREN)
+        alias = f"{func_token.value}({col})"
+        return AggregateColumn(function=func, column=col, alias=alias)
+
+    def _parse_group_by(self) -> list[str]:
+        """Parse a GROUP BY clause.
+
+        Grammar::
+
+            GROUP BY col, col, ...
+
+        """
+        self._expect(TokenType.KEYWORD, "GROUP")
+        self._expect(TokenType.KEYWORD, "BY")
         columns: list[str] = [self._parse_qualified_name()]
         while self._peek().token_type == TokenType.COMMA:
             self._advance()
@@ -371,8 +449,17 @@ class _Parser:
         return left
 
     def _parse_condition(self) -> Condition:
-        """Parse a single comparison condition: column op value."""
-        column = self._parse_qualified_name()
+        """Parse a single comparison condition: column op value.
+
+        The column can be a regular name, dot-notation, or an aggregate
+        function call (used in HAVING clauses).
+        """
+        token = self._peek()
+        if token.token_type == TokenType.KEYWORD and token.value in _AGG_FUNCS:
+            agg = self._parse_aggregate()
+            column = agg.alias
+        else:
+            column = self._parse_qualified_name()
         op_token = self._expect(TokenType.OPERATOR)
 
         if op_token.value not in _OPERATOR_MAP:

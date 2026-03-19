@@ -56,6 +56,13 @@ KEYWORDS = frozenset(
         "DROP",
         "JOIN",
         "ON",
+        "GROUP",
+        "HAVING",
+        "COUNT",
+        "SUM",
+        "AVG",
+        "MIN",
+        "MAX",
         "TRUE",
         "FALSE",
     }

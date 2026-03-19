@@ -35,6 +35,7 @@ nav:
     - Query Engine: concepts/query-engine.md
     - SQL Parser: concepts/sql-parser.md
     - JOINs: concepts/joins.md
+    - Aggregations: concepts/aggregations.md
     - Transactions: concepts/transactions.md
     - REPL: concepts/repl.md
 
