@@ -27,9 +27,11 @@ from pydb.sql_tokenizer import Token, TokenType, tokenize
 from pydb.statements import (
     CreateIndexStatement,
     CreateTableStatement,
+    CreateViewStatement,
     DeleteStatement,
     DropIndexStatement,
     DropTableStatement,
+    DropViewStatement,
     ExplainStatement,
     InsertStatement,
     Statement,
@@ -212,12 +214,14 @@ class _Parser:
             limit=limit,
         )
 
-    def _parse_create(self) -> CreateTableStatement | CreateIndexStatement:
-        """Parse a CREATE TABLE or CREATE INDEX statement."""
+    def _parse_create(self) -> CreateTableStatement | CreateIndexStatement | CreateViewStatement:
+        """Parse a CREATE TABLE, CREATE INDEX, or CREATE VIEW statement."""
         self._expect(TokenType.KEYWORD, "CREATE")
         next_kw = self._peek()
         if next_kw.token_type == TokenType.KEYWORD and next_kw.value == "INDEX":
             return self._parse_create_index()
+        if next_kw.token_type == TokenType.KEYWORD and next_kw.value == "VIEW":
+            return self._parse_create_view()
         self._expect(TokenType.KEYWORD, "TABLE")
         return self._parse_create_table_body()
 
@@ -242,6 +246,14 @@ class _Parser:
         column = self._expect(TokenType.IDENTIFIER).value
         self._expect(TokenType.RPAREN)
         return CreateIndexStatement(index_name=index_name, table=table_name, column=column)
+
+    def _parse_create_view(self) -> CreateViewStatement:
+        """Parse CREATE VIEW name AS SELECT ...."""
+        self._expect(TokenType.KEYWORD, "VIEW")
+        view_name = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.KEYWORD, "AS")
+        query = self._parse_select()
+        return CreateViewStatement(name=view_name, query=query)
 
     def _parse_column_def(self) -> Column:
         """Parse a single column definition: name TYPE [constraints].
@@ -286,8 +298,8 @@ class _Parser:
             unique=unique,
         )
 
-    def _parse_drop(self) -> DropTableStatement | DropIndexStatement:
-        """Parse a DROP TABLE or DROP INDEX statement."""
+    def _parse_drop(self) -> DropTableStatement | DropIndexStatement | DropViewStatement:
+        """Parse a DROP TABLE, DROP INDEX, or DROP VIEW statement."""
         self._expect(TokenType.KEYWORD, "DROP")
         next_kw = self._peek()
         if next_kw.token_type == TokenType.KEYWORD and next_kw.value == "INDEX":
@@ -296,6 +308,10 @@ class _Parser:
             self._expect(TokenType.KEYWORD, "ON")
             table_name = self._expect(TokenType.IDENTIFIER).value
             return DropIndexStatement(index_name=index_name, table=table_name)
+        if next_kw.token_type == TokenType.KEYWORD and next_kw.value == "VIEW":
+            self._advance()
+            view_name = self._expect(TokenType.IDENTIFIER).value
+            return DropViewStatement(name=view_name)
         self._expect(TokenType.KEYWORD, "TABLE")
         table_name = self._expect(TokenType.IDENTIFIER).value
         return DropTableStatement(table=table_name)

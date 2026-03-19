@@ -8,6 +8,7 @@ through the storage engine.
 from pathlib import Path
 
 from pydb.errors import PyDBError
+from pydb.query import Query
 from pydb.schema import Schema
 from pydb.storage import StorageEngine
 from pydb.table import Table
@@ -29,13 +30,14 @@ class Database:
 
     """
 
-    __slots__ = ("_path", "_storage", "_tables")
+    __slots__ = ("_path", "_storage", "_tables", "_views")
 
     def __init__(self, path: str | Path) -> None:
         """Create or open a database at the given path."""
         self._path = Path(path)
         self._storage = StorageEngine(data_dir=self._path)
         self._tables: dict[str, Table] = {}
+        self._views: dict[str, Query] = {}
 
     @property
     def path(self) -> Path:
@@ -111,6 +113,45 @@ class Database:
     def table_names(self) -> list[str]:
         """Return the names of all tables in the database."""
         return sorted(self._tables.keys())
+
+    def create_view(self, name: str, query: Query) -> None:
+        """Create a named view (a saved query).
+
+        Args:
+            name: The view name.
+            query: The SELECT query that defines the view.
+
+        Raises:
+            DatabaseError: If a view or table with that name already exists.
+
+        """
+        if name in self._views or name in self._tables:
+            msg = f"Name {name!r} already exists"
+            raise DatabaseError(msg)
+        self._views[name] = query
+
+    def drop_view(self, name: str) -> None:
+        """Remove a view by name.
+
+        Args:
+            name: The view name.
+
+        Raises:
+            DatabaseError: If no view with that name exists.
+
+        """
+        if name not in self._views:
+            msg = f"View {name!r} does not exist"
+            raise DatabaseError(msg)
+        del self._views[name]
+
+    def get_view(self, name: str) -> Query | None:
+        """Return the query for a view, or None if not a view."""
+        return self._views.get(name)
+
+    def view_names(self) -> list[str]:
+        """Return the names of all views in the database."""
+        return sorted(self._views.keys())
 
     def save(self) -> None:
         """Save all tables to disk."""

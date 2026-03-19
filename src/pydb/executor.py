@@ -33,9 +33,11 @@ from pydb.schema import Schema
 from pydb.statements import (
     CreateIndexStatement,
     CreateTableStatement,
+    CreateViewStatement,
     DeleteStatement,
     DropIndexStatement,
     DropTableStatement,
+    DropViewStatement,
     ExplainStatement,
     InsertStatement,
     Statement,
@@ -83,7 +85,11 @@ def execute(query_or_stmt: Query | Statement, database: Database) -> ExecuteResu
         return _execute_create_index(query_or_stmt, database)
     if isinstance(query_or_stmt, DropIndexStatement):
         return _execute_drop_index(query_or_stmt, database)
-    return _execute_explain(query_or_stmt, database)
+    if isinstance(query_or_stmt, ExplainStatement):
+        return _execute_explain(query_or_stmt, database)
+    if isinstance(query_or_stmt, CreateViewStatement):
+        return _execute_create_view(query_or_stmt, database)
+    return _execute_drop_view(query_or_stmt, database)
 
 
 def _result_message(message: str) -> ExecuteResult:
@@ -92,7 +98,12 @@ def _result_message(message: str) -> ExecuteResult:
 
 
 def _execute_select(query: Query, database: Database) -> ExecuteResult:
-    """Execute a SELECT query, with optional JOIN support."""
+    """Execute a SELECT query, with optional JOIN and view support."""
+    # Check if the table name is actually a view.
+    view_query = database.get_view(query.table)
+    if view_query is not None:
+        return execute(view_query, database)
+
     try:
         left_table = database.get_table(query.table)
     except PyDBError as exc:
@@ -531,3 +542,23 @@ def _resolve_subqueries(clause: WhereClause, database: Database) -> WhereClause:
     return Or(
         _resolve_subqueries(clause.left, database), _resolve_subqueries(clause.right, database)
     )
+
+
+def _execute_create_view(stmt: CreateViewStatement, database: Database) -> ExecuteResult:
+    """Execute a CREATE VIEW statement."""
+    try:
+        database.create_view(stmt.name, stmt.query)
+    except PyDBError as exc:
+        msg = f"CREATE VIEW failed: {exc}"
+        raise QueryError(msg) from exc
+    return _result_message(f"View {stmt.name!r} created")
+
+
+def _execute_drop_view(stmt: DropViewStatement, database: Database) -> ExecuteResult:
+    """Execute a DROP VIEW statement."""
+    try:
+        database.drop_view(stmt.name)
+    except PyDBError as exc:
+        msg = f"DROP VIEW failed: {exc}"
+        raise QueryError(msg) from exc
+    return _result_message(f"View {stmt.name!r} dropped")
