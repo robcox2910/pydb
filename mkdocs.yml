@@ -31,6 +31,7 @@ nav:
     - Serializer: concepts/serializer.md
     - Storage Engine: concepts/storage-engine.md
     - Database: concepts/database.md
+    - Indexes: concepts/indexes.md
 
 markdown_extensions:
   - admonition
