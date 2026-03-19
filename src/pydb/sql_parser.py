@@ -23,9 +23,12 @@ from pydb.query import (
 from pydb.record import Value
 from pydb.sql_tokenizer import Token, TokenType, tokenize
 from pydb.statements import (
+    CreateIndexStatement,
     CreateTableStatement,
     DeleteStatement,
+    DropIndexStatement,
     DropTableStatement,
+    ExplainStatement,
     InsertStatement,
     Statement,
     UpdateStatement,
@@ -136,15 +139,17 @@ class _Parser:
             case "SELECT":
                 return self._parse_select()
             case "CREATE":
-                return self._parse_create_table()
+                return self._parse_create()
             case "DROP":
-                return self._parse_drop_table()
+                return self._parse_drop()
             case "INSERT":
                 return self._parse_insert()
             case "UPDATE":
                 return self._parse_update()
             case "DELETE":
                 return self._parse_delete()
+            case "EXPLAIN":
+                return self._parse_explain()
             case _:
                 msg = f"Unsupported statement: {kw.value}"
                 raise ParseError(msg)
@@ -205,28 +210,36 @@ class _Parser:
             limit=limit,
         )
 
-    def _parse_create_table(self) -> CreateTableStatement:
-        """Parse a CREATE TABLE statement.
-
-        Grammar::
-
-            CREATE TABLE name (col_name TYPE, ...)
-
-        """
+    def _parse_create(self) -> CreateTableStatement | CreateIndexStatement:
+        """Parse a CREATE TABLE or CREATE INDEX statement."""
         self._expect(TokenType.KEYWORD, "CREATE")
+        next_kw = self._peek()
+        if next_kw.token_type == TokenType.KEYWORD and next_kw.value == "INDEX":
+            return self._parse_create_index()
         self._expect(TokenType.KEYWORD, "TABLE")
+        return self._parse_create_table_body()
+
+    def _parse_create_table_body(self) -> CreateTableStatement:
+        """Parse the body of a CREATE TABLE (after CREATE TABLE)."""
         table_name = self._expect(TokenType.IDENTIFIER).value
-
         self._expect(TokenType.LPAREN)
-        columns: list[tuple[str, DataType]] = []
-        columns.append(self._parse_column_def())
-
+        columns: list[tuple[str, DataType]] = [self._parse_column_def()]
         while self._peek().token_type == TokenType.COMMA:
             self._advance()
             columns.append(self._parse_column_def())
-
         self._expect(TokenType.RPAREN)
         return CreateTableStatement(table=table_name, columns=columns)
+
+    def _parse_create_index(self) -> CreateIndexStatement:
+        """Parse CREATE INDEX name ON table (column)."""
+        self._expect(TokenType.KEYWORD, "INDEX")
+        index_name = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.KEYWORD, "ON")
+        table_name = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.LPAREN)
+        column = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.RPAREN)
+        return CreateIndexStatement(index_name=index_name, table=table_name, column=column)
 
     def _parse_column_def(self) -> tuple[str, DataType]:
         """Parse a single column definition: name TYPE."""
@@ -241,18 +254,25 @@ class _Parser:
 
         return col_name, _TYPE_MAP[type_name]
 
-    def _parse_drop_table(self) -> DropTableStatement:
-        """Parse a DROP TABLE statement.
-
-        Grammar::
-
-            DROP TABLE name
-
-        """
+    def _parse_drop(self) -> DropTableStatement | DropIndexStatement:
+        """Parse a DROP TABLE or DROP INDEX statement."""
         self._expect(TokenType.KEYWORD, "DROP")
+        next_kw = self._peek()
+        if next_kw.token_type == TokenType.KEYWORD and next_kw.value == "INDEX":
+            self._advance()
+            index_name = self._expect(TokenType.IDENTIFIER).value
+            self._expect(TokenType.KEYWORD, "ON")
+            table_name = self._expect(TokenType.IDENTIFIER).value
+            return DropIndexStatement(index_name=index_name, table=table_name)
         self._expect(TokenType.KEYWORD, "TABLE")
         table_name = self._expect(TokenType.IDENTIFIER).value
         return DropTableStatement(table=table_name)
+
+    def _parse_explain(self) -> ExplainStatement:
+        """Parse EXPLAIN SELECT ... into an ExplainStatement."""
+        self._expect(TokenType.KEYWORD, "EXPLAIN")
+        query = self._parse_select()
+        return ExplainStatement(query=query)
 
     def _parse_insert(self) -> InsertStatement:
         """Parse an INSERT INTO statement.

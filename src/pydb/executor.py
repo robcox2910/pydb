@@ -15,6 +15,7 @@ from typing import Any
 
 from pydb.database import Database
 from pydb.errors import PyDBError
+from pydb.planner import plan_query
 from pydb.query import (
     AggFunc,
     AggregateColumn,
@@ -28,9 +29,12 @@ from pydb.query import (
 from pydb.record import Record, Value
 from pydb.schema import Column, Schema
 from pydb.statements import (
+    CreateIndexStatement,
     CreateTableStatement,
     DeleteStatement,
+    DropIndexStatement,
     DropTableStatement,
+    ExplainStatement,
     InsertStatement,
     Statement,
     UpdateStatement,
@@ -71,7 +75,13 @@ def execute(query_or_stmt: Query | Statement, database: Database) -> ExecuteResu
         return _execute_insert(query_or_stmt, database)
     if isinstance(query_or_stmt, UpdateStatement):
         return _execute_update(query_or_stmt, database)
-    return _execute_delete(query_or_stmt, database)
+    if isinstance(query_or_stmt, DeleteStatement):
+        return _execute_delete(query_or_stmt, database)
+    if isinstance(query_or_stmt, CreateIndexStatement):
+        return _execute_create_index(query_or_stmt, database)
+    if isinstance(query_or_stmt, DropIndexStatement):
+        return _execute_drop_index(query_or_stmt, database)
+    return _execute_explain(query_or_stmt, database)
 
 
 def _result_message(message: str) -> ExecuteResult:
@@ -446,3 +456,37 @@ def _project(
         target_cols = columns
 
     return [{col: record[col] for col in target_cols} for record in records]
+
+
+def _execute_create_index(stmt: CreateIndexStatement, database: Database) -> ExecuteResult:
+    """Execute a CREATE INDEX statement."""
+    try:
+        table = database.get_table(stmt.table)
+        table.create_index(stmt.index_name, stmt.column)
+    except PyDBError as exc:
+        msg = f"CREATE INDEX failed: {exc}"
+        raise QueryError(msg) from exc
+    return _result_message(f"Index {stmt.index_name!r} created on {stmt.table}({stmt.column})")
+
+
+def _execute_drop_index(stmt: DropIndexStatement, database: Database) -> ExecuteResult:
+    """Execute a DROP INDEX statement."""
+    try:
+        table = database.get_table(stmt.table)
+        table.drop_index(stmt.index_name)
+    except PyDBError as exc:
+        msg = f"DROP INDEX failed: {exc}"
+        raise QueryError(msg) from exc
+    return _result_message(f"Index {stmt.index_name!r} dropped")
+
+
+def _execute_explain(stmt: ExplainStatement, database: Database) -> ExecuteResult:
+    """Execute an EXPLAIN statement -- show the query plan."""
+    try:
+        table = database.get_table(stmt.query.table)
+    except PyDBError as exc:
+        msg = f"EXPLAIN failed: {exc}"
+        raise QueryError(msg) from exc
+
+    plan = plan_query(stmt.query, table)
+    return [{"plan": plan.strategy}]

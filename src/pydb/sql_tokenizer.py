@@ -63,6 +63,8 @@ KEYWORDS = frozenset(
         "AVG",
         "MIN",
         "MAX",
+        "INDEX",
+        "EXPLAIN",
         "TRUE",
         "FALSE",
     }
