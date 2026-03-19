@@ -7,7 +7,17 @@ the meaning as you go.
 """
 
 from pydb.errors import PyDBError
-from pydb.query import And, Condition, Operator, Or, OrderBy, Query, SortDirection, WhereClause
+from pydb.query import (
+    And,
+    Condition,
+    JoinClause,
+    Operator,
+    Or,
+    OrderBy,
+    Query,
+    SortDirection,
+    WhereClause,
+)
 from pydb.record import Value
 from pydb.sql_tokenizer import Token, TokenType, tokenize
 from pydb.statements import (
@@ -133,7 +143,8 @@ class _Parser:
 
         Grammar::
 
-            SELECT columns FROM table [WHERE condition] [ORDER BY col [ASC|DESC]] [LIMIT n]
+            SELECT columns FROM table [JOIN table ON col = col]
+                [WHERE condition] [ORDER BY col [ASC|DESC]] [LIMIT n]
 
         """
         self._expect(TokenType.KEYWORD, "SELECT")
@@ -142,13 +153,16 @@ class _Parser:
         self._expect(TokenType.KEYWORD, "FROM")
         table_name = self._expect(TokenType.IDENTIFIER).value
 
+        join: JoinClause | None = None
         where: WhereClause | None = None
         order_by: OrderBy | None = None
         limit: int | None = None
 
         while self._peek().token_type != TokenType.EOF:
             kw = self._peek()
-            if kw.token_type == TokenType.KEYWORD and kw.value == "WHERE":
+            if kw.token_type == TokenType.KEYWORD and kw.value == "JOIN":
+                join = self._parse_join()
+            elif kw.token_type == TokenType.KEYWORD and kw.value == "WHERE":
                 self._advance()
                 where = self._parse_where()
             elif kw.token_type == TokenType.KEYWORD and kw.value == "ORDER":
@@ -163,6 +177,7 @@ class _Parser:
         return Query(
             table=table_name,
             columns=columns,
+            join=join,
             where=where,
             order_by=order_by,
             limit=limit,
@@ -300,16 +315,48 @@ class _Parser:
 
         return DeleteStatement(table=table_name, where=where)
 
+    def _parse_join(self) -> JoinClause:
+        """Parse a JOIN ... ON clause.
+
+        Grammar::
+
+            JOIN table ON col = col
+
+        Column references may use dot notation (table.column).
+
+        """
+        self._expect(TokenType.KEYWORD, "JOIN")
+        join_table = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.KEYWORD, "ON")
+        left_col = self._parse_qualified_name()
+        self._expect(TokenType.OPERATOR, "=")
+        right_col = self._parse_qualified_name()
+        return JoinClause(table=join_table, left_column=left_col, right_column=right_col)
+
+    def _parse_qualified_name(self) -> str:
+        """Parse an identifier, optionally qualified with dot notation.
+
+        Returns:
+            A name like "column" or "table.column".
+
+        """
+        name = self._expect(TokenType.IDENTIFIER).value
+        if self._peek().token_type == TokenType.DOT:
+            self._advance()
+            col = self._expect(TokenType.IDENTIFIER).value
+            return f"{name}.{col}"
+        return name
+
     def _parse_select_columns(self) -> list[str]:
-        """Parse the column list after SELECT."""
+        """Parse the column list after SELECT (supports dot notation)."""
         if self._peek().token_type == TokenType.STAR:
             self._advance()
             return []
 
-        columns: list[str] = [self._expect(TokenType.IDENTIFIER).value]
+        columns: list[str] = [self._parse_qualified_name()]
         while self._peek().token_type == TokenType.COMMA:
             self._advance()
-            columns.append(self._expect(TokenType.IDENTIFIER).value)
+            columns.append(self._parse_qualified_name())
         return columns
 
     def _parse_where(self) -> WhereClause:
@@ -325,7 +372,7 @@ class _Parser:
 
     def _parse_condition(self) -> Condition:
         """Parse a single comparison condition: column op value."""
-        column = self._expect(TokenType.IDENTIFIER).value
+        column = self._parse_qualified_name()
         op_token = self._expect(TokenType.OPERATOR)
 
         if op_token.value not in _OPERATOR_MAP:
@@ -359,7 +406,7 @@ class _Parser:
         """Parse an ORDER BY clause."""
         self._expect(TokenType.KEYWORD, "ORDER")
         self._expect(TokenType.KEYWORD, "BY")
-        column = self._expect(TokenType.IDENTIFIER).value
+        column = self._parse_qualified_name()
 
         direction = SortDirection.ASC
         if self._peek().token_type == TokenType.KEYWORD and self._peek().value in ("ASC", "DESC"):

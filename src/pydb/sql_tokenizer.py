@@ -26,6 +26,7 @@ class TokenType(StrEnum):
     OPERATOR = "OPERATOR"
     STAR = "STAR"
     COMMA = "COMMA"
+    DOT = "DOT"
     LPAREN = "LPAREN"
     RPAREN = "RPAREN"
     EOF = "EOF"
@@ -53,6 +54,8 @@ KEYWORDS = frozenset(
         "CREATE",
         "TABLE",
         "DROP",
+        "JOIN",
+        "ON",
         "TRUE",
         "FALSE",
     }
@@ -77,6 +80,7 @@ class Token:
 _SINGLE_CHAR_TOKENS: dict[str, TokenType] = {
     "*": TokenType.STAR,
     ",": TokenType.COMMA,
+    ".": TokenType.DOT,
     "(": TokenType.LPAREN,
     ")": TokenType.RPAREN,
 }
