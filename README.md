@@ -9,30 +9,39 @@ with real-world analogies a 12-year-old can follow.
 
 ## Features
 
-- Tables with typed columns (schema enforcement)
-- Insert, select, update, and delete operations
-- Storage engine (persist data to disk)
+- **Full SQL support** -- SELECT, INSERT, UPDATE, DELETE, CREATE/DROP TABLE
+- **JOINs** -- cross-reference rows from two tables
+- **Aggregations** -- COUNT, SUM, AVG, MIN, MAX with GROUP BY and HAVING
+- **Subqueries** -- scalar and IN subqueries in WHERE clauses
+- **Views** -- saved queries as virtual tables
+- **B-Tree indexes** -- fast lookups with CREATE/DROP INDEX
+- **Query planner** -- EXPLAIN shows scan vs. index lookup decisions
+- **Constraints** -- PRIMARY KEY, NOT NULL, UNIQUE
+- **Transactions** -- commit/rollback with snapshot isolation
+- **Storage engine** -- JSON persistence with crash-safe writes
+- **Write-Ahead Log** -- crash recovery via operation logging
+- **MVCC** -- multi-version concurrency for snapshot isolation
+- **CSV import/export** -- load and save data from spreadsheet files
+- **Interactive REPL** -- type SQL and see pretty-printed results
 
 ## Example
 
-```python
-from pydb.table import Table
-from pydb.schema import Schema, Column
-from pydb.types import DataType
+```sql
+pydb> CREATE TABLE cards (name TEXT NOT NULL, type TEXT, power INTEGER)
+Table 'cards' created
 
-# Define a schema -- like designing a form
-schema = Schema(columns=[
-    Column(name="name", data_type=DataType.TEXT),
-    Column(name="age", data_type=DataType.INTEGER),
-])
+pydb> INSERT INTO cards VALUES ('Pikachu', 'Electric', 55)
+1 row inserted
 
-# Create a table and insert data
-table = Table(name="friends", schema=schema)
-table.insert({"name": "Alice", "age": 12})
-table.insert({"name": "Bob", "age": 13})
+pydb> SELECT type, COUNT(*), AVG(power) FROM cards GROUP BY type
+┌──────────┬──────────┬────────────┐
+│ type     │ COUNT(*) │ AVG(power) │
+├──────────┼──────────┼────────────┤
+│ Electric │        1 │       55.0 │
+└──────────┴──────────┴────────────┘
 
-# Find all friends older than 12
-results = table.select(where=lambda row: row["age"] > 12)
+pydb> EXPLAIN SELECT * FROM cards WHERE name = 'Pikachu'
+Full table scan on cards
 ```
 
 ## Quick Start
@@ -40,6 +49,9 @@ results = table.select(where=lambda row: row["age"] > 12)
 ```bash
 # Install dependencies
 uv sync --all-extras
+
+# Launch the interactive REPL
+uv run pydb
 
 # Run tests
 uv run pytest

@@ -73,5 +73,5 @@ the idea is the same: always be able to go back to a safe state.
 
 ## Next Up
 
-You now have a fully functional database! Head to the **REPL** to try
-it out interactively -- type SQL and see results in real time.
+Try it out in the [REPL](repl.md) -- type SQL and see results in
+real time.

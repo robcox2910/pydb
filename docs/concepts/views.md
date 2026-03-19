@@ -16,6 +16,9 @@ CREATE VIEW strong_cards AS
 
 -- Now use it like a table
 SELECT * FROM strong_cards
+
+-- Remove a view
+DROP VIEW strong_cards
 ```
 
 Views are useful for:
@@ -23,3 +26,23 @@ Views are useful for:
 - **Hiding complexity** -- other users see "strong_cards" without
   knowing the WHERE clause behind it.
 - **Security** -- show only certain columns or rows.
+
+## Views Are Live
+
+Unlike a snapshot, a view always shows the **latest data**. If you
+add a new card with power 60 after creating the view, the view will
+include it next time you query it -- because it re-runs the stored
+query every time.
+
+## What We Test
+
+- Creating a view stores the query.
+- Querying a view returns the stored query's results.
+- Views reflect data changes (they re-run on every access).
+- Dropping a view makes it no longer queryable.
+- Creating a duplicate view raises an error.
+
+## Next Up
+
+Head to [Transactions](transactions.md) to learn about the "no
+take-backs" rule that keeps your data safe.

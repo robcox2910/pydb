@@ -54,3 +54,8 @@ Then, show me the details for those trainers."
 - Subqueries can reference different tables than the outer query.
 - Nested subqueries work (a subquery inside a subquery).
 - Subqueries with WHERE clauses filter correctly.
+
+## Next Up
+
+Head to [Views](views.md) to learn about saved queries that act like
+virtual tables.

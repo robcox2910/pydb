@@ -74,9 +74,8 @@ INSERT INTO users VALUES ('alice@example.com', 'Bob')    -- FAILS! Email taken.
 - Constraints are parsed correctly in CREATE TABLE.
 - Clear error messages explain which constraint was violated.
 
-## What's Next?
+## Next Up
 
-You've built a complete database engine from scratch! It has tables,
-schemas, types, a storage engine, B-tree indexes, a query engine with
-JOINs and aggregations, an SQL parser, transactions, a query planner,
-constraints, and an interactive REPL. That's an incredible achievement!
+Now that our data has rules, we can ask more powerful questions.
+Head to [Subqueries](subqueries.md) to learn about questions inside
+questions.

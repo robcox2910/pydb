@@ -77,7 +77,11 @@ def import_csv(table: Table, file_path: str | Path) -> int:
                     continue
                 val = raw_value if raw_value is not None else ""
                 values[col_name] = _coerce_value(val, type_map[col_name], col_name, row_num)
-            table.insert(values)
+            try:
+                table.insert(values)
+            except Exception as exc:
+                msg = f"Row {row_num}: {exc}"
+                raise CSVError(msg) from exc
             count += 1
 
     return count
