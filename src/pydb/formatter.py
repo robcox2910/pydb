@@ -85,7 +85,7 @@ def _data_line(cols: list[str], widths: dict[str, int], row: dict[str, Value]) -
     for col in cols:
         val = _format_value(row.get(col, ""))
         # Right-align numbers, left-align everything else.
-        if isinstance(row.get(col), int | float):
+        if isinstance(row.get(col), int | float) and not isinstance(row.get(col), bool):
             cells.append(f" {val:>{widths[col]}} ")
         else:
             cells.append(f" {val:<{widths[col]}} ")

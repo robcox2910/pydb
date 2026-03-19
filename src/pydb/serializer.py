@@ -69,9 +69,17 @@ def serialize_schema(schema: Schema) -> dict[str, Any]:
         A dictionary with a "columns" key containing column definitions.
 
     """
-    return {
-        "columns": [{"name": col.name, "data_type": col.data_type.value} for col in schema.columns],
-    }
+    col_defs: list[dict[str, str | bool]] = []
+    for col in schema.columns:
+        col_dict: dict[str, str | bool] = {"name": col.name, "data_type": col.data_type.value}
+        if col.primary_key:
+            col_dict["primary_key"] = True
+        if col.not_null:
+            col_dict["not_null"] = True
+        if col.unique:
+            col_dict["unique"] = True
+        col_defs.append(col_dict)
+    return {"columns": col_defs}
 
 
 def deserialize_schema(data: dict[str, Any]) -> Schema:
@@ -100,6 +108,9 @@ def deserialize_schema(data: dict[str, Any]) -> Schema:
                 Column(
                     name=col_data["name"],
                     data_type=DataType(col_data["data_type"]),
+                    primary_key=bool(col_data.get("primary_key", False)),
+                    not_null=bool(col_data.get("not_null", False)),
+                    unique=bool(col_data.get("unique", False)),
                 )
             )
         except (KeyError, ValueError) as exc:

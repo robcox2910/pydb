@@ -107,5 +107,5 @@ SELECT name, power FROM cards WHERE power >= 50 ORDER BY name DESC LIMIT 5
 ## Next Up
 
 With the SQL parser in place, we can build a **REPL** -- an interactive
-prompt where you type SQL and see results immediately, just like a real
-database!
+prompt where you type SQL and see results immediately. Head to
+[JOINs](joins.md) to learn how to combine data from multiple tables.

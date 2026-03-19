@@ -95,7 +95,10 @@ class WriteAheadLog:
             for raw_line in f:
                 stripped = raw_line.strip()
                 if stripped:
-                    entries.append(json.loads(stripped))
+                    try:
+                        entries.append(json.loads(stripped))
+                    except json.JSONDecodeError:
+                        continue  # Skip corrupted entries during recovery.
         return entries
 
     def get_committed_txns(self) -> set[str]:

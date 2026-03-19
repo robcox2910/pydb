@@ -72,3 +72,9 @@ The REPL is just a loop:
 
 That's it! The REPL ties together everything we've built: the SQL
 parser, the query executor, the database, and the storage engine.
+
+## Next Up
+
+The REPL is the front door to your database. Now explore more advanced
+features like [Transactions](transactions.md) for the "no take-backs"
+rule.

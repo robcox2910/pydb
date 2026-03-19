@@ -89,6 +89,7 @@ def execute(query_or_stmt: Query | Statement, database: Database) -> ExecuteResu
         return _execute_explain(query_or_stmt, database)
     if isinstance(query_or_stmt, CreateViewStatement):
         return _execute_create_view(query_or_stmt, database)
+    # Must be DropViewStatement (type narrowing guarantees this).
     return _execute_drop_view(query_or_stmt, database)
 
 
@@ -102,7 +103,9 @@ def _execute_select(query: Query, database: Database) -> ExecuteResult:
     # Check if the table name is actually a view.
     view_query = database.get_view(query.table)
     if view_query is not None:
-        return execute(view_query, database)
+        # Run the view's stored query, then apply outer clauses.
+        view_results = execute(view_query, database)
+        return _apply_outer_clauses(view_results, query)
 
     try:
         left_table = database.get_table(query.table)
@@ -150,7 +153,7 @@ def _execute_simple_select(query: Query, table: Table, database: Database) -> Ex
 
 def _execute_aggregate(query: Query, records: list[Record]) -> ExecuteResult:
     """Execute a query with aggregate functions and optional GROUP BY."""
-    groups = _group_records(records, query.group_by) if query.group_by else {"": records}
+    groups = _group_records(records, query.group_by) if query.group_by else {(): records}
 
     result: ExecuteResult = []
     for group_records in groups.values():
@@ -192,16 +195,18 @@ def _execute_aggregate(query: Query, records: list[Record]) -> ExecuteResult:
     return result
 
 
-def _group_records(records: list[Record], group_by: list[str]) -> dict[str, list[Record]]:
+def _group_records(
+    records: list[Record], group_by: list[str]
+) -> dict[tuple[Value, ...], list[Record]]:
     """Group records by the values of the GROUP BY columns.
 
     Returns:
-        A dict mapping group key strings to lists of records.
+        A dict mapping group keys to lists of records.
 
     """
-    groups: dict[str, list[Record]] = {}
+    groups: dict[tuple[Value, ...], list[Record]] = {}
     for record in records:
-        key = "|".join(str(record[col]) for col in group_by)
+        key = tuple(record[col] for col in group_by)
         groups.setdefault(key, []).append(record)
     return groups
 
@@ -212,7 +217,8 @@ def _compute_aggregate(agg: AggregateColumn, records: list[Record]) -> Value:
         case AggFunc.COUNT:
             return len(records)
         case AggFunc.SUM:
-            return sum(int(r[agg.column]) for r in records)
+            values: list[Any] = [r[agg.column] for r in records]
+            return sum(values)
         case AggFunc.AVG:
             total = sum(float(r[agg.column]) for r in records)
             return total / len(records) if records else 0.0
@@ -339,7 +345,10 @@ def _compare(left: Any, op: Operator, right: Any) -> bool:
             result = left <= right
         case Operator.IN:
             result = left in right
-    return result  # type: ignore[possibly-undefined]
+        case _:
+            msg = f"Unknown operator: {op}"
+            raise ValueError(msg)
+    return result
 
 
 def _execute_create_table(stmt: CreateTableStatement, database: Database) -> ExecuteResult:
@@ -562,3 +571,28 @@ def _execute_drop_view(stmt: DropViewStatement, database: Database) -> ExecuteRe
         msg = f"DROP VIEW failed: {exc}"
         raise QueryError(msg) from exc
     return _result_message(f"View {stmt.name!r} dropped")
+
+
+def _apply_outer_clauses(rows: ExecuteResult, query: Query) -> ExecuteResult:
+    """Apply WHERE, ORDER BY, LIMIT, and column projection from an outer query to view results."""
+    result = rows
+
+    # Filter.
+    if query.where is not None:
+        result = [row for row in result if _matches_dict(query.where, row)]
+
+    # Sort.
+    if query.order_by is not None:
+        col = query.order_by.column
+        reverse = query.order_by.direction == SortDirection.DESC
+        result = sorted(result, key=lambda r: r[col], reverse=reverse)  # type: ignore[return-value]
+
+    # Limit.
+    if query.limit is not None:
+        result = result[: query.limit]
+
+    # Project columns.
+    if query.columns:
+        result = [{c: row[c] for c in query.columns} for row in result]
+
+    return result
