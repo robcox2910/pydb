@@ -18,6 +18,7 @@ from pydb.query import (
     OrderBy,
     Query,
     SortDirection,
+    Subquery,
     WhereClause,
 )
 from pydb.record import Value
@@ -26,9 +27,11 @@ from pydb.sql_tokenizer import Token, TokenType, tokenize
 from pydb.statements import (
     CreateIndexStatement,
     CreateTableStatement,
+    CreateViewStatement,
     DeleteStatement,
     DropIndexStatement,
     DropTableStatement,
+    DropViewStatement,
     ExplainStatement,
     InsertStatement,
     Statement,
@@ -178,7 +181,7 @@ class _Parser:
         order_by: OrderBy | None = None
         limit: int | None = None
 
-        while self._peek().token_type != TokenType.EOF:
+        while self._peek().token_type not in (TokenType.EOF, TokenType.RPAREN):
             kw = self._peek()
             if kw.token_type == TokenType.KEYWORD and kw.value == "JOIN":
                 join = self._parse_join()
@@ -211,12 +214,14 @@ class _Parser:
             limit=limit,
         )
 
-    def _parse_create(self) -> CreateTableStatement | CreateIndexStatement:
-        """Parse a CREATE TABLE or CREATE INDEX statement."""
+    def _parse_create(self) -> CreateTableStatement | CreateIndexStatement | CreateViewStatement:
+        """Parse a CREATE TABLE, CREATE INDEX, or CREATE VIEW statement."""
         self._expect(TokenType.KEYWORD, "CREATE")
         next_kw = self._peek()
         if next_kw.token_type == TokenType.KEYWORD and next_kw.value == "INDEX":
             return self._parse_create_index()
+        if next_kw.token_type == TokenType.KEYWORD and next_kw.value == "VIEW":
+            return self._parse_create_view()
         self._expect(TokenType.KEYWORD, "TABLE")
         return self._parse_create_table_body()
 
@@ -241,6 +246,14 @@ class _Parser:
         column = self._expect(TokenType.IDENTIFIER).value
         self._expect(TokenType.RPAREN)
         return CreateIndexStatement(index_name=index_name, table=table_name, column=column)
+
+    def _parse_create_view(self) -> CreateViewStatement:
+        """Parse CREATE VIEW name AS SELECT ...."""
+        self._expect(TokenType.KEYWORD, "VIEW")
+        view_name = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.KEYWORD, "AS")
+        query = self._parse_select()
+        return CreateViewStatement(name=view_name, query=query)
 
     def _parse_column_def(self) -> Column:
         """Parse a single column definition: name TYPE [constraints].
@@ -285,8 +298,8 @@ class _Parser:
             unique=unique,
         )
 
-    def _parse_drop(self) -> DropTableStatement | DropIndexStatement:
-        """Parse a DROP TABLE or DROP INDEX statement."""
+    def _parse_drop(self) -> DropTableStatement | DropIndexStatement | DropViewStatement:
+        """Parse a DROP TABLE, DROP INDEX, or DROP VIEW statement."""
         self._expect(TokenType.KEYWORD, "DROP")
         next_kw = self._peek()
         if next_kw.token_type == TokenType.KEYWORD and next_kw.value == "INDEX":
@@ -295,6 +308,10 @@ class _Parser:
             self._expect(TokenType.KEYWORD, "ON")
             table_name = self._expect(TokenType.IDENTIFIER).value
             return DropIndexStatement(index_name=index_name, table=table_name)
+        if next_kw.token_type == TokenType.KEYWORD and next_kw.value == "VIEW":
+            self._advance()
+            view_name = self._expect(TokenType.IDENTIFIER).value
+            return DropViewStatement(name=view_name)
         self._expect(TokenType.KEYWORD, "TABLE")
         table_name = self._expect(TokenType.IDENTIFIER).value
         return DropTableStatement(table=table_name)
@@ -502,8 +519,11 @@ class _Parser:
     def _parse_condition(self) -> Condition:
         """Parse a single comparison condition: column op value.
 
-        The column can be a regular name, dot-notation, or an aggregate
-        function call (used in HAVING clauses).
+        Supports:
+        - Regular: column > 50
+        - Aggregate in HAVING: COUNT(*) > 1
+        - IN subquery: column IN (SELECT ...)
+        - Scalar subquery: column > (SELECT AVG(...) FROM ...)
         """
         token = self._peek()
         if token.token_type == TokenType.KEYWORD and token.value in _AGG_FUNCS:
@@ -511,11 +531,39 @@ class _Parser:
             column = agg.alias
         else:
             column = self._parse_qualified_name()
-        op_token = self._expect(TokenType.OPERATOR)
 
+        # Handle IN (SELECT ...) or IN (val, val, ...).
+        if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "IN":
+            self._advance()
+            self._expect(TokenType.LPAREN)
+            if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "SELECT":
+                inner = self._parse_select()
+                self._expect(TokenType.RPAREN)
+                return Condition(column=column, operator=Operator.IN, value=Subquery(query=inner))
+            msg = "IN requires a subquery: IN (SELECT ...)"
+            raise ParseError(msg)
+
+        op_token = self._expect(TokenType.OPERATOR)
         if op_token.value not in _OPERATOR_MAP:
             msg = f"Unknown operator: {op_token.value!r}"
             raise ParseError(msg)
+
+        # Check for scalar subquery: op (SELECT ...).
+        if self._peek().token_type == TokenType.LPAREN:
+            next_after = self._tokens[self._pos + 1] if self._pos + 1 < len(self._tokens) else None
+            if (
+                next_after
+                and next_after.token_type == TokenType.KEYWORD
+                and next_after.value == "SELECT"
+            ):
+                self._expect(TokenType.LPAREN)
+                inner = self._parse_select()
+                self._expect(TokenType.RPAREN)
+                return Condition(
+                    column=column,
+                    operator=_OPERATOR_MAP[op_token.value],
+                    value=Subquery(query=inner),
+                )
 
         return Condition(
             column=column, operator=_OPERATOR_MAP[op_token.value], value=self._parse_value()

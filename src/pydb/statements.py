@@ -126,6 +126,32 @@ class ExplainStatement:
     query: Query
 
 
+@dataclass(frozen=True, slots=True)
+class CreateViewStatement:
+    """Represent a CREATE VIEW statement.
+
+    Args:
+        name: The view name.
+        query: The SELECT query that defines the view.
+
+    """
+
+    name: str
+    query: Query
+
+
+@dataclass(frozen=True, slots=True)
+class DropViewStatement:
+    """Represent a DROP VIEW statement.
+
+    Args:
+        name: The view name.
+
+    """
+
+    name: str
+
+
 from pydb.query import Query  # noqa: E402  # Avoid circular import.
 
 # Union of all statement types the parser can produce.
@@ -138,4 +164,6 @@ Statement = (
     | CreateIndexStatement
     | DropIndexStatement
     | ExplainStatement
+    | CreateViewStatement
+    | DropViewStatement
 )
