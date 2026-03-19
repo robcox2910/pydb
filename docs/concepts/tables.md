@@ -79,4 +79,5 @@ book is lost, its number is retired.
 
 Right now our table lives only in memory -- if you close Python, your data
 vanishes like a sandcastle at high tide. Next we'll build a
-**storage engine** to save tables to disk.
+**serializer** to convert tables to text. Head to
+[Serializer](serializer.md).

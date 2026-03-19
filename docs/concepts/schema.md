@@ -48,7 +48,7 @@ schema = Schema(columns=[
 
 # Check if a set of values is valid
 schema.validate({"name": "Pikachu", "type": "Electric", "power": 55})  # ✓ OK
-schema.validate({"name": "Pikachu", "power": "banana"})  # ✗ SchemaError!
+schema.validate({"name": "Pikachu", "type": "Electric", "power": "banana"})  # ✗ SchemaError!
 ```
 
 ## Data Types

@@ -115,5 +115,5 @@ idx.find_range("A", "M")  # [2]  (Charmander)
 ## Next Up
 
 Now that we can find records fast, we need a way to *ask* for them in
-plain English (well, plain SQL). Head to the query engine to learn how
-SELECT, WHERE, and JOIN work.
+plain English (well, plain SQL). Head to the
+[Query Engine](query-engine.md) to learn how SELECT, WHERE, and more work.
