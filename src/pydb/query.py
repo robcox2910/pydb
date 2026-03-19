@@ -134,6 +134,22 @@ class OrderBy:
     direction: SortDirection = SortDirection.ASC
 
 
+@dataclass(frozen=True, slots=True)
+class JoinClause:
+    """Describe a JOIN between two tables.
+
+    Args:
+        table: The table to join with.
+        left_column: Column from the left (FROM) table (may use dot notation).
+        right_column: Column from the right (JOIN) table (may use dot notation).
+
+    """
+
+    table: str
+    left_column: str
+    right_column: str
+
+
 @dataclass(frozen=True)
 class Query:
     """A complete database query.
@@ -144,6 +160,7 @@ class Query:
     Args:
         table: The table name to query.
         columns: Column names to include (empty = all columns).
+        join: An optional JOIN clause.
         where: An optional filter condition.
         order_by: An optional sort specification.
         limit: Maximum number of results (None = no limit).
@@ -152,6 +169,7 @@ class Query:
 
     table: str
     columns: list[str] = field(default_factory=lambda: [])
+    join: JoinClause | None = None
     where: WhereClause | None = None
     order_by: OrderBy | None = None
     limit: int | None = None

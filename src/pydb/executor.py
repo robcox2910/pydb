@@ -15,7 +15,7 @@ from typing import Any
 
 from pydb.database import Database
 from pydb.errors import PyDBError
-from pydb.query import Condition, Query, SortDirection, WhereClause
+from pydb.query import And, Condition, Operator, Query, SortDirection, WhereClause
 from pydb.record import Record, Value
 from pydb.schema import Column, Schema
 from pydb.statements import (
@@ -26,6 +26,7 @@ from pydb.statements import (
     Statement,
     UpdateStatement,
 )
+from pydb.table import Table
 
 
 class QueryError(PyDBError):
@@ -70,13 +71,22 @@ def _result_message(message: str) -> ExecuteResult:
 
 
 def _execute_select(query: Query, database: Database) -> ExecuteResult:
-    """Execute a SELECT query."""
+    """Execute a SELECT query, with optional JOIN support."""
     try:
-        table = database.get_table(query.table)
+        left_table = database.get_table(query.table)
     except PyDBError as exc:
         msg = f"Query failed: {exc}"
         raise QueryError(msg) from exc
 
+    # If there's a JOIN, produce combined rows from both tables.
+    if query.join is not None:
+        return _execute_select_with_join(query, database, left_table)
+
+    return _execute_simple_select(query, left_table)
+
+
+def _execute_simple_select(query: Query, table: Table) -> ExecuteResult:
+    """Execute a SELECT without a JOIN."""
     valid_cols = set(table.schema.column_names)
     if query.where is not None:
         _validate_where_columns(query.where, valid_cols)
@@ -96,6 +106,122 @@ def _execute_select(query: Query, database: Database) -> ExecuteResult:
         records = records[: query.limit]
 
     return _project(records, query.columns, table.schema.column_names)
+
+
+def _execute_select_with_join(
+    query: Query,
+    database: Database,
+    left_table: Table,
+) -> ExecuteResult:
+    """Execute a SELECT with a JOIN clause (nested loop join)."""
+    join = query.join
+    assert join is not None  # Caller guarantees this.  # noqa: S101
+
+    try:
+        right_table = database.get_table(join.table)
+    except PyDBError as exc:
+        msg = f"JOIN failed: {exc}"
+        raise QueryError(msg) from exc
+
+    left_name = left_table.name
+    right_name = right_table.name
+
+    # Resolve the ON columns (strip table prefix if present).
+    left_join_col = _resolve_column(join.left_column, left_name, right_name)
+    right_join_col = _resolve_column(join.right_column, left_name, right_name)
+
+    left_records = left_table.select()
+    right_records = right_table.select()
+
+    # Build combined rows with qualified column names (table.column).
+    combined: list[dict[str, Value]] = []
+    for left_rec in left_records:
+        for right_rec in right_records:
+            if left_rec[left_join_col] == right_rec[right_join_col]:
+                row: dict[str, Value] = {}
+                for col in left_table.schema.column_names:
+                    row[f"{left_name}.{col}"] = left_rec[col]
+                for col in right_table.schema.column_names:
+                    row[f"{right_name}.{col}"] = right_rec[col]
+                combined.append(row)
+
+    # Apply WHERE filter on combined rows.
+    if query.where is not None:
+        combined = [row for row in combined if _matches_dict(query.where, row)]
+
+    # Apply ORDER BY.
+    if query.order_by is not None:
+        col = query.order_by.column
+        reverse = query.order_by.direction == SortDirection.DESC
+        combined = sorted(combined, key=lambda r: r[col], reverse=reverse)  # type: ignore[return-value]
+
+    # Apply LIMIT.
+    if query.limit is not None:
+        combined = combined[: query.limit]
+
+    # Project columns.
+    if query.columns:
+        combined = [{col: row[col] for col in query.columns} for row in combined]
+
+    return combined
+
+
+def _resolve_column(qualified: str, left_table: str, right_table: str) -> str:
+    """Strip table prefix from a qualified column name.
+
+    Args:
+        qualified: A column name like "table.col" or just "col".
+        left_table: The left table name.
+        right_table: The right table name.
+
+    Returns:
+        The bare column name.
+
+    Raises:
+        QueryError: If the table prefix doesn't match either table.
+
+    """
+    if "." not in qualified:
+        return qualified
+    parts = qualified.split(".", maxsplit=1)
+    table_prefix = parts[0]
+    if table_prefix not in (left_table, right_table):
+        msg = f"Unknown table {table_prefix!r} in column reference {qualified!r}"
+        raise QueryError(msg)
+    return parts[1]
+
+
+def _matches_dict(clause: WhereClause, row: dict[str, Value]) -> bool:
+    """Check if a combined row dict matches a WHERE clause.
+
+    Unlike Condition.matches (which works on Record objects), this works
+    on plain dicts produced by JOINs.
+    """
+    if isinstance(clause, Condition):
+        record_value: Any = row[clause.column]
+        target: Any = clause.value
+        return _compare(record_value, clause.operator, target)
+    if isinstance(clause, And):
+        return _matches_dict(clause.left, row) and _matches_dict(clause.right, row)
+    return _matches_dict(clause.left, row) or _matches_dict(clause.right, row)
+
+
+def _compare(left: Any, op: Operator, right: Any) -> bool:
+    """Evaluate a comparison between two values."""
+    match op:
+        case Operator.EQ:
+            result = left == right
+        case Operator.NE:
+            result = left != right
+        case Operator.GT:
+            result = left > right
+        case Operator.GE:
+            result = left >= right
+        case Operator.LT:
+            result = left < right
+        case Operator.LE:
+            result = left <= right
+    return result  # type: ignore[possibly-undefined]
 
 
 def _execute_create_table(stmt: CreateTableStatement, database: Database) -> ExecuteResult:
