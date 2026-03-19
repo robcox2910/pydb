@@ -117,7 +117,7 @@ class TestTableSelect:
         table.insert({"name": "Charmander", "power": POWER_52})
         table.insert({"name": "Squirtle", "power": POWER_48})
 
-        strong = table.select(where=lambda r: r["power"] > POWER_THRESHOLD)
+        strong = table.select(where=lambda r: int(r["power"]) > POWER_THRESHOLD)
         assert len(strong) == SECOND_ID
         names = [r["name"] for r in strong]
         assert "Pikachu" in names

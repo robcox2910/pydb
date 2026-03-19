@@ -84,7 +84,7 @@ class TestSchemaValidation:
     def test_bool_rejected_for_integer_column(self) -> None:
         """A boolean should not be accepted as an integer."""
         schema = self._make_schema()
-        with pytest.raises(SchemaError, match="expects INTEGER.*got bool"):
+        with pytest.raises(SchemaError, match=r"expects INTEGER.*got bool"):
             schema.validate({"name": "Pikachu", "type": "Electric", "power": True})
 
     def test_float_column_accepts_float(self) -> None:

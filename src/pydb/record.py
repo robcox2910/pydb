@@ -4,8 +4,8 @@ Think of a record as one trading card in a binder. It has a unique serial
 number (the ID) and a set of facts printed on it (the data fields).
 """
 
+from collections.abc import Mapping
 from typing import Any
-
 
 # Type alias for values stored in a record.
 Value = str | int | float | bool
@@ -20,14 +20,15 @@ class Record:
     Args:
         record_id: Unique identifier for this record.
         data: Column-name-to-value mapping.
+
     """
 
     __slots__ = ("_data", "_record_id")
 
-    def __init__(self, record_id: int, data: dict[str, Value]) -> None:
+    def __init__(self, record_id: int, data: Mapping[str, Value]) -> None:
         """Create a new record with the given ID and data."""
         self._record_id = record_id
-        self._data = dict(data)
+        self._data: dict[str, Value] = dict(data)
 
     @property
     def record_id(self) -> int:
@@ -52,6 +53,7 @@ class Record:
 
         Raises:
             KeyError: If the column does not exist in this record.
+
         """
         return self._data[column]
 
@@ -69,7 +71,7 @@ class Record:
         """Return a developer-friendly string representation."""
         return f"Record(record_id={self._record_id}, data={self._data})"
 
-    def _update(self, values: dict[str, Value]) -> None:
+    def update_fields(self, values: Mapping[str, Value]) -> None:
         """Update fields in this record.
 
         Args:
@@ -77,6 +79,7 @@ class Record:
 
         Raises:
             KeyError: If a column name does not exist in this record.
+
         """
         for column, value in values.items():
             if column not in self._data:
@@ -85,11 +88,12 @@ class Record:
             self._data[column] = value
 
     # Pyright needs this to accept Any for dict-style access patterns.
-    def get(self, column: str, default: Any = None) -> Any:  # noqa: ANN401
+    def get(self, column: str, default: Any = None) -> Any:
         """Return the value for a column, or a default if not found.
 
         Args:
             column: The column name to look up.
             default: Value to return if the column is not found.
+
         """
         return self._data.get(column, default)

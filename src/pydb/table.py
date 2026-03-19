@@ -5,7 +5,7 @@ follows the same template (schema), and each card has a unique serial number
 (record ID). You can add cards, find cards, change cards, and remove cards.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from pydb.errors import RecordNotFoundError
 from pydb.record import Record, Value
@@ -21,6 +21,7 @@ class Table:
     Args:
         name: The name of this table (e.g., "pokemon_cards").
         schema: The schema that all records in this table must follow.
+
     """
 
     __slots__ = ("_name", "_next_id", "_records", "_schema")
@@ -42,12 +43,45 @@ class Table:
         """Return the table's schema."""
         return self._schema
 
+    @classmethod
+    def from_stored(
+        cls,
+        name: str,
+        schema: Schema,
+        records: list[Record],
+        next_id: int,
+    ) -> Table:
+        """Reconstruct a table from stored components.
+
+        Used by the storage engine to rebuild a table loaded from disk.
+
+        Args:
+            name: The table name.
+            schema: The table schema.
+            records: The records to populate the table with.
+            next_id: The next auto-increment ID.
+
+        Returns:
+            A fully populated table.
+
+        """
+        table = cls(name=name, schema=schema)
+        table._next_id = next_id
+        for record in records:
+            table._records[record.record_id] = record
+        return table
+
+    @property
+    def next_id(self) -> int:
+        """Return the next auto-increment ID (used by the storage engine)."""
+        return self._next_id
+
     @property
     def row_count(self) -> int:
         """Return the number of records in the table."""
         return len(self._records)
 
-    def insert(self, values: dict[str, Value]) -> Record:
+    def insert(self, values: Mapping[str, Value]) -> Record:
         """Insert a new record into the table.
 
         The schema validates the values before insertion. The table assigns
@@ -61,6 +95,7 @@ class Table:
 
         Raises:
             SchemaError: If the values don't conform to the table's schema.
+
         """
         self._schema.validate(values)
         record_id = self._next_id
@@ -81,6 +116,7 @@ class Table:
 
         Returns:
             A list of matching records, ordered by ID.
+
         """
         records = sorted(self._records.values(), key=lambda r: r.record_id)
         if where is None:
@@ -98,6 +134,7 @@ class Table:
 
         Raises:
             RecordNotFoundError: If no record with that ID exists.
+
         """
         record = self._records.get(record_id)
         if record is None:
@@ -105,7 +142,7 @@ class Table:
             raise RecordNotFoundError(msg)
         return record
 
-    def update(self, record_id: int, values: dict[str, Value]) -> Record:
+    def update(self, record_id: int, values: Mapping[str, Value]) -> Record:
         """Update fields of an existing record.
 
         Only the columns specified in *values* are changed; other columns
@@ -121,13 +158,14 @@ class Table:
         Raises:
             RecordNotFoundError: If no record with that ID exists.
             SchemaError: If the new values don't conform to the schema.
+
         """
         record = self.get(record_id)
         # Build the full set of values for validation.
         merged = record.data
         merged.update(values)
         self._schema.validate(merged)
-        record._update(values)  # noqa: SLF001
+        record.update_fields(values)
         return record
 
     def delete(self, record_id: int) -> None:
@@ -138,6 +176,7 @@ class Table:
 
         Raises:
             RecordNotFoundError: If no record with that ID exists.
+
         """
         if record_id not in self._records:
             msg = f"No record with id={record_id} in table {self._name!r}"

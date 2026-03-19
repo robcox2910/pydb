@@ -28,6 +28,9 @@ nav:
     - Records: concepts/records.md
     - Schema: concepts/schema.md
     - Tables: concepts/tables.md
+    - Serializer: concepts/serializer.md
+    - Storage Engine: concepts/storage-engine.md
+    - Database: concepts/database.md
 
 markdown_extensions:
   - admonition

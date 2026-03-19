@@ -6,6 +6,7 @@ that says "every card must have a Name (text), a Type (text), and a Power
 record before letting it in.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from pydb.errors import SchemaError
@@ -20,6 +21,7 @@ class Column:
     Args:
         name: The column name (e.g., "age").
         data_type: The type of data this column holds.
+
     """
 
     name: str
@@ -34,9 +36,10 @@ class Schema:
 
     Args:
         columns: The column definitions for this schema.
+
     """
 
-    __slots__ = ("_columns", "_column_map")
+    __slots__ = ("_column_map", "_columns")
 
     def __init__(self, columns: list[Column]) -> None:
         """Create a new schema from a list of column definitions."""
@@ -56,7 +59,7 @@ class Schema:
         """Return the column names in order."""
         return [col.name for col in self._columns]
 
-    def validate(self, values: dict[str, Value]) -> None:
+    def validate(self, values: Mapping[str, Value]) -> None:
         """Check that a set of values conforms to this schema.
 
         Validation checks (the bouncer's checklist):
@@ -69,6 +72,7 @@ class Schema:
 
         Raises:
             SchemaError: If validation fails, with a message explaining why.
+
         """
         # Check for unknown columns.
         unknown = set(values.keys()) - set(self._column_map.keys())

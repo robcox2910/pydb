@@ -109,14 +109,14 @@ class TestRecordUpdate:
     def test_update_changes_values(self) -> None:
         """Updating a field should change its value."""
         record = Record(record_id=RECORD_ID_1, data={"name": "Pikachu", "power": POWER_55})
-        record._update({"power": POWER_60})
+        record.update_fields({"power": POWER_60})
         assert record["power"] == POWER_60
 
     def test_update_unknown_column_raises(self) -> None:
         """Updating a column that doesn't exist should raise KeyError."""
         record = Record(record_id=RECORD_ID_1, data={"name": "Pikachu"})
         with pytest.raises(KeyError, match="Unknown column"):
-            record._update({"missing": "value"})
+            record.update_fields({"missing": "value"})
 
 
 class TestRecordRepr:
