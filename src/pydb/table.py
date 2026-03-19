@@ -3,20 +3,29 @@
 Think of a table as a binder full of trading cards. Every card in the binder
 follows the same template (schema), and each card has a unique serial number
 (record ID). You can add cards, find cards, change cards, and remove cards.
+
+Tables can also have **indexes** -- like a card catalog that makes finding
+specific cards much faster.
 """
 
 from collections.abc import Callable, Mapping
 
-from pydb.errors import RecordNotFoundError
+from pydb.errors import PyDBError, RecordNotFoundError
+from pydb.index import Index
 from pydb.record import Record, Value
 from pydb.schema import Schema
 
 
+class TableIndexError(PyDBError):
+    """Raise when an index operation fails."""
+
+
 class Table:
-    """Represent a database table that holds records.
+    """Represent a database table that holds records and indexes.
 
     The table enforces its schema on every insert and update, assigns
-    auto-incrementing IDs, and provides basic CRUD operations.
+    auto-incrementing IDs, provides basic CRUD operations, and
+    automatically maintains any indexes on insert, update, and delete.
 
     Args:
         name: The name of this table (e.g., "pokemon_cards").
@@ -24,7 +33,7 @@ class Table:
 
     """
 
-    __slots__ = ("_name", "_next_id", "_records", "_schema")
+    __slots__ = ("_indexes", "_name", "_next_id", "_records", "_schema")
 
     def __init__(self, name: str, schema: Schema) -> None:
         """Create a new empty table with the given name and schema."""
@@ -32,6 +41,7 @@ class Table:
         self._schema = schema
         self._records: dict[int, Record] = {}
         self._next_id = 1
+        self._indexes: dict[str, Index] = {}
 
     @property
     def name(self) -> str:
@@ -81,11 +91,71 @@ class Table:
         """Return the number of records in the table."""
         return len(self._records)
 
+    @property
+    def indexes(self) -> dict[str, Index]:
+        """Return the table's indexes (name → Index)."""
+        return dict(self._indexes)
+
+    def create_index(self, index_name: str, column: str) -> Index:
+        """Create a new index on a column.
+
+        Populates the index with all existing records.
+
+        Args:
+            index_name: A name for the index.
+            column: The column to index.
+
+        Returns:
+            The newly created index.
+
+        Raises:
+            IndexError: If an index with that name already exists or
+                the column doesn't exist in the schema.
+
+        """
+        if index_name in self._indexes:
+            msg = f"Index {index_name!r} already exists on table {self._name!r}"
+            raise TableIndexError(msg)
+        if column not in self._schema.column_names:
+            msg = f"Column {column!r} does not exist in table {self._name!r}"
+            raise TableIndexError(msg)
+
+        idx = Index(name=index_name, column=column)
+
+        # Populate with existing records.
+        for record in self._records.values():
+            idx.insert(record[column], record.record_id)
+
+        self._indexes[index_name] = idx
+        return idx
+
+    def drop_index(self, index_name: str) -> None:
+        """Remove an index by name.
+
+        Args:
+            index_name: The index to remove.
+
+        Raises:
+            IndexError: If no index with that name exists.
+
+        """
+        if index_name not in self._indexes:
+            msg = f"Index {index_name!r} does not exist on table {self._name!r}"
+            raise TableIndexError(msg)
+        del self._indexes[index_name]
+
+    def get_index_for_column(self, column: str) -> Index | None:
+        """Return an index covering the given column, if one exists."""
+        for idx in self._indexes.values():
+            if idx.column == column:
+                return idx
+        return None
+
     def insert(self, values: Mapping[str, Value]) -> Record:
         """Insert a new record into the table.
 
         The schema validates the values before insertion. The table assigns
-        the next available ID automatically.
+        the next available ID automatically. All indexes are updated.
 
         Args:
             values: Column-name-to-value mapping for the new record.
@@ -102,6 +172,11 @@ class Table:
         self._next_id += 1
         record = Record(record_id=record_id, data=values)
         self._records[record_id] = record
+
+        # Update indexes.
+        for idx in self._indexes.values():
+            idx.insert(record[idx.column], record_id)
+
         return record
 
     def select(
@@ -124,6 +199,20 @@ class Table:
         if where is None:
             return records
         return [r for r in records if where(r)]
+
+    def select_by_index(self, index: Index, key: Value) -> list[Record]:
+        """Return records matching a key via an index lookup.
+
+        Args:
+            index: The index to use for the lookup.
+            key: The value to search for.
+
+        Returns:
+            A list of matching records.
+
+        """
+        record_ids = index.find(key)
+        return [self._records[rid] for rid in record_ids if rid in self._records]
 
     def get(self, record_id: int) -> Record:
         """Return the record with the given ID.
@@ -149,6 +238,7 @@ class Table:
 
         Only the columns specified in *values* are changed; other columns
         keep their current values. The schema validates the new values.
+        All affected indexes are updated.
 
         Args:
             record_id: The ID of the record to update.
@@ -167,11 +257,18 @@ class Table:
         merged = record.data
         merged.update(values)
         self._schema.validate(merged)
+
+        # Update indexes for changed columns.
+        for idx in self._indexes.values():
+            if idx.column in values:
+                idx.delete(record[idx.column], record_id)
+                idx.insert(values[idx.column], record_id)
+
         record.update_fields(values)
         return record
 
     def delete(self, record_id: int) -> None:
-        """Remove a record from the table.
+        """Remove a record from the table. All indexes are updated.
 
         Args:
             record_id: The ID of the record to delete.
@@ -183,6 +280,13 @@ class Table:
         if record_id not in self._records:
             msg = f"No record with id={record_id} in table {self._name!r}"
             raise RecordNotFoundError(msg)
+
+        record = self._records[record_id]
+
+        # Update indexes.
+        for idx in self._indexes.values():
+            idx.delete(record[idx.column], record_id)
+
         del self._records[record_id]
 
     def __repr__(self) -> str:

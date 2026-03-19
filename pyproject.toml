@@ -127,6 +127,12 @@ max-args = 9
     "S101",   # Use of assert
     "SLF001", # Accessing private members in tests is fine
 ]
+"src/pydb/executor.py" = [
+    "PLR0911", # Dispatch function has many return statements by design
+]
+"src/pydb/sql_parser.py" = [
+    "PLR0911", # Dispatch function has many return statements by design
+]
 
 [tool.ruff.format]
 quote-style = "double"
