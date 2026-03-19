@@ -27,7 +27,7 @@ from pydb.query import (
     WhereClause,
 )
 from pydb.record import Record, Value
-from pydb.schema import Column, Schema
+from pydb.schema import Schema
 from pydb.statements import (
     CreateIndexStatement,
     CreateTableStatement,
@@ -325,8 +325,7 @@ def _compare(left: Any, op: Operator, right: Any) -> bool:
 
 def _execute_create_table(stmt: CreateTableStatement, database: Database) -> ExecuteResult:
     """Execute a CREATE TABLE statement."""
-    columns = [Column(name=name, data_type=dt) for name, dt in stmt.columns]
-    schema = Schema(columns=columns)
+    schema = Schema(columns=stmt.columns)
     try:
         database.create_table(stmt.table, schema)
     except PyDBError as exc:

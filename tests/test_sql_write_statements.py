@@ -40,24 +40,26 @@ class TestParseCreateTable:
         assert isinstance(stmt, CreateTableStatement)
         assert stmt.table == "cards"
         assert len(stmt.columns) == TWO_COLUMNS
-        assert stmt.columns[0] == ("name", DataType.TEXT)
-        assert stmt.columns[1] == ("power", DataType.INTEGER)
+        assert stmt.columns[0].name == "name"
+        assert stmt.columns[0].data_type == DataType.TEXT
+        assert stmt.columns[1].name == "power"
+        assert stmt.columns[1].data_type == DataType.INTEGER
 
     def test_all_types(self) -> None:
         """All data types should be recognised."""
         stmt = parse_sql("CREATE TABLE t (a TEXT, b INTEGER, c FLOAT, d BOOLEAN)")
         assert isinstance(stmt, CreateTableStatement)
-        assert stmt.columns[0][1] == DataType.TEXT
-        assert stmt.columns[1][1] == DataType.INTEGER
-        assert stmt.columns[2][1] == DataType.FLOAT
-        assert stmt.columns[3][1] == DataType.BOOLEAN
+        assert stmt.columns[0].data_type == DataType.TEXT
+        assert stmt.columns[1].data_type == DataType.INTEGER
+        assert stmt.columns[2].data_type == DataType.FLOAT
+        assert stmt.columns[3].data_type == DataType.BOOLEAN
 
     def test_short_type_names(self) -> None:
         """INT and BOOL should be accepted as type aliases."""
         stmt = parse_sql("CREATE TABLE t (a INT, b BOOL)")
         assert isinstance(stmt, CreateTableStatement)
-        assert stmt.columns[0][1] == DataType.INTEGER
-        assert stmt.columns[1][1] == DataType.BOOLEAN
+        assert stmt.columns[0].data_type == DataType.INTEGER
+        assert stmt.columns[1].data_type == DataType.BOOLEAN
 
     def test_unknown_type_raises(self) -> None:
         """An unknown column type should raise ParseError."""

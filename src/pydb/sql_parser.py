@@ -21,6 +21,7 @@ from pydb.query import (
     WhereClause,
 )
 from pydb.record import Value
+from pydb.schema import Column
 from pydb.sql_tokenizer import Token, TokenType, tokenize
 from pydb.statements import (
     CreateIndexStatement,
@@ -223,7 +224,7 @@ class _Parser:
         """Parse the body of a CREATE TABLE (after CREATE TABLE)."""
         table_name = self._expect(TokenType.IDENTIFIER).value
         self._expect(TokenType.LPAREN)
-        columns: list[tuple[str, DataType]] = [self._parse_column_def()]
+        columns: list[Column] = [self._parse_column_def()]
         while self._peek().token_type == TokenType.COMMA:
             self._advance()
             columns.append(self._parse_column_def())
@@ -241,18 +242,48 @@ class _Parser:
         self._expect(TokenType.RPAREN)
         return CreateIndexStatement(index_name=index_name, table=table_name, column=column)
 
-    def _parse_column_def(self) -> tuple[str, DataType]:
-        """Parse a single column definition: name TYPE."""
+    def _parse_column_def(self) -> Column:
+        """Parse a single column definition: name TYPE [constraints].
+
+        Constraints: PRIMARY KEY, NOT NULL, UNIQUE (in any order).
+        """
         col_name = self._expect(TokenType.IDENTIFIER).value
         type_token = self._advance()
 
-        # Type names can be identifiers (INT, TEXT) or keywords (BOOLEAN).
         type_name = type_token.value.upper()
         if type_name not in _TYPE_MAP:
             msg = f"Unknown column type: {type_token.value!r}"
             raise ParseError(msg)
 
-        return col_name, _TYPE_MAP[type_name]
+        data_type = _TYPE_MAP[type_name]
+        primary_key = False
+        not_null = False
+        unique = False
+
+        # Parse optional constraints after the type.
+        while self._peek().token_type == TokenType.KEYWORD and self._peek().value in (
+            "PRIMARY",
+            "NOT",
+            "UNIQUE",
+        ):
+            kw = self._advance().value
+            if kw == "PRIMARY":
+                self._expect(TokenType.KEYWORD, "KEY")
+                primary_key = True
+                not_null = True  # PRIMARY KEY implies NOT NULL.
+            elif kw == "NOT":
+                self._expect(TokenType.KEYWORD, "NULL")
+                not_null = True
+            elif kw == "UNIQUE":
+                unique = True
+
+        return Column(
+            name=col_name,
+            data_type=data_type,
+            primary_key=primary_key,
+            not_null=not_null,
+            unique=unique,
+        )
 
     def _parse_drop(self) -> DropTableStatement | DropIndexStatement:
         """Parse a DROP TABLE or DROP INDEX statement."""

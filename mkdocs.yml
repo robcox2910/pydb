@@ -37,6 +37,7 @@ nav:
     - JOINs: concepts/joins.md
     - Aggregations: concepts/aggregations.md
     - Query Planner: concepts/query-planner.md
+    - Constraints: concepts/constraints.md
     - Transactions: concepts/transactions.md
     - REPL: concepts/repl.md
 
