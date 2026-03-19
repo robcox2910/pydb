@@ -147,8 +147,4 @@ class StorageEngine:
 
     def list_tables(self) -> list[str]:
         """Return the names of all tables with data files on disk."""
-        return sorted(
-            p.stem
-            for p in self._data_dir.iterdir()
-            if p.suffix == TABLE_FILE_SUFFIX
-        )
+        return sorted(p.stem for p in self._data_dir.iterdir() if p.suffix == TABLE_FILE_SUFFIX)

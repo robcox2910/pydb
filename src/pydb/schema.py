@@ -93,10 +93,7 @@ class Schema:
             # if the column expects INTEGER, reject booleans; if it expects
             # BOOLEAN, reject plain ints.
             if self._column_map[col_name] == DataType.INTEGER and isinstance(value, bool):
-                msg = (
-                    f"Column {col_name!r} expects {self._column_map[col_name].value}, "
-                    f"got bool"
-                )
+                msg = f"Column {col_name!r} expects {self._column_map[col_name].value}, got bool"
                 raise SchemaError(msg)
             if not isinstance(value, expected_type):
                 msg = (

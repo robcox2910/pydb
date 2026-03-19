@@ -26,10 +26,12 @@ NONEXISTENT_ID = 999
 
 def _make_table() -> Table:
     """Create a standard test table with name and power columns."""
-    schema = Schema(columns=[
-        Column(name="name", data_type=DataType.TEXT),
-        Column(name="power", data_type=DataType.INTEGER),
-    ])
+    schema = Schema(
+        columns=[
+            Column(name="name", data_type=DataType.TEXT),
+            Column(name="power", data_type=DataType.INTEGER),
+        ]
+    )
     return Table(name="cards", schema=schema)
 
 

@@ -31,10 +31,12 @@ PI = 3.14
 
 def _make_schema() -> Schema:
     """Create a standard test schema."""
-    return Schema(columns=[
-        Column(name="name", data_type=DataType.TEXT),
-        Column(name="power", data_type=DataType.INTEGER),
-    ])
+    return Schema(
+        columns=[
+            Column(name="name", data_type=DataType.TEXT),
+            Column(name="power", data_type=DataType.INTEGER),
+        ]
+    )
 
 
 class TestSerializeSchema:

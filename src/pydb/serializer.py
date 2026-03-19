@@ -67,10 +67,7 @@ def serialize_schema(schema: Schema) -> dict[str, Any]:
 
     """
     return {
-        "columns": [
-            {"name": col.name, "data_type": col.data_type.value}
-            for col in schema.columns
-        ],
+        "columns": [{"name": col.name, "data_type": col.data_type.value} for col in schema.columns],
     }
 
 
@@ -96,10 +93,12 @@ def deserialize_schema(data: dict[str, Any]) -> Schema:
     columns: list[Column] = []
     for col_data in columns_data:
         try:
-            columns.append(Column(
-                name=col_data["name"],
-                data_type=DataType(col_data["data_type"]),
-            ))
+            columns.append(
+                Column(
+                    name=col_data["name"],
+                    data_type=DataType(col_data["data_type"]),
+                )
+            )
         except (KeyError, ValueError) as exc:
             msg = f"Invalid column definition: {col_data}"
             raise SerializationError(msg) from exc

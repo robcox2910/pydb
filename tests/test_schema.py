@@ -20,19 +20,23 @@ class TestSchemaCreation:
 
     def test_schema_stores_columns(self) -> None:
         """A schema should remember its column definitions."""
-        schema = Schema(columns=[
-            Column(name="name", data_type=DataType.TEXT),
-            Column(name="power", data_type=DataType.INTEGER),
-        ])
+        schema = Schema(
+            columns=[
+                Column(name="name", data_type=DataType.TEXT),
+                Column(name="power", data_type=DataType.INTEGER),
+            ]
+        )
         assert len(schema.columns) == 2  # noqa: PLR2004
 
     def test_schema_column_names(self) -> None:
         """The column_names property should return names in order."""
-        schema = Schema(columns=[
-            Column(name="name", data_type=DataType.TEXT),
-            Column(name="type", data_type=DataType.TEXT),
-            Column(name="power", data_type=DataType.INTEGER),
-        ])
+        schema = Schema(
+            columns=[
+                Column(name="name", data_type=DataType.TEXT),
+                Column(name="type", data_type=DataType.TEXT),
+                Column(name="power", data_type=DataType.INTEGER),
+            ]
+        )
         assert schema.column_names == ["name", "type", "power"]
 
     def test_empty_schema_raises(self) -> None:
@@ -46,11 +50,13 @@ class TestSchemaValidation:
 
     def _make_schema(self) -> Schema:
         """Create a standard test schema."""
-        return Schema(columns=[
-            Column(name="name", data_type=DataType.TEXT),
-            Column(name="type", data_type=DataType.TEXT),
-            Column(name="power", data_type=DataType.INTEGER),
-        ])
+        return Schema(
+            columns=[
+                Column(name="name", data_type=DataType.TEXT),
+                Column(name="type", data_type=DataType.TEXT),
+                Column(name="power", data_type=DataType.INTEGER),
+            ]
+        )
 
     def test_valid_data_passes(self) -> None:
         """Values that match the schema should pass validation."""
@@ -62,12 +68,14 @@ class TestSchemaValidation:
         """A column not in the schema should be rejected."""
         schema = self._make_schema()
         with pytest.raises(SchemaError, match="Unknown column"):
-            schema.validate({
-                "name": "Pikachu",
-                "type": "Electric",
-                "power": POWER_55,
-                "colour": "yellow",
-            })
+            schema.validate(
+                {
+                    "name": "Pikachu",
+                    "type": "Electric",
+                    "power": POWER_55,
+                    "colour": "yellow",
+                }
+            )
 
     def test_missing_column_rejected(self) -> None:
         """A missing required column should be rejected."""
@@ -89,16 +97,20 @@ class TestSchemaValidation:
 
     def test_float_column_accepts_float(self) -> None:
         """A FLOAT column should accept float values."""
-        schema = Schema(columns=[
-            Column(name="value", data_type=DataType.FLOAT),
-        ])
+        schema = Schema(
+            columns=[
+                Column(name="value", data_type=DataType.FLOAT),
+            ]
+        )
         schema.validate({"value": PI})
 
     def test_boolean_column_accepts_bool(self) -> None:
         """A BOOLEAN column should accept boolean values."""
-        schema = Schema(columns=[
-            Column(name="active", data_type=DataType.BOOLEAN),
-        ])
+        schema = Schema(
+            columns=[
+                Column(name="active", data_type=DataType.BOOLEAN),
+            ]
+        )
         schema.validate({"active": True})
 
 
@@ -124,10 +136,12 @@ class TestSchemaRepr:
 
     def test_repr_shows_columns(self) -> None:
         """The schema repr should list column names and types."""
-        schema = Schema(columns=[
-            Column(name="name", data_type=DataType.TEXT),
-            Column(name="power", data_type=DataType.INTEGER),
-        ])
+        schema = Schema(
+            columns=[
+                Column(name="name", data_type=DataType.TEXT),
+                Column(name="power", data_type=DataType.INTEGER),
+            ]
+        )
         result = repr(schema)
         assert "name:TEXT" in result
         assert "power:INTEGER" in result

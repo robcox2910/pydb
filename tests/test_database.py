@@ -21,10 +21,12 @@ FIRST_ID = 1
 
 def _make_schema() -> Schema:
     """Create a standard test schema."""
-    return Schema(columns=[
-        Column(name="name", data_type=DataType.TEXT),
-        Column(name="power", data_type=DataType.INTEGER),
-    ])
+    return Schema(
+        columns=[
+            Column(name="name", data_type=DataType.TEXT),
+            Column(name="power", data_type=DataType.INTEGER),
+        ]
+    )
 
 
 class TestDatabaseCreation:
@@ -166,10 +168,12 @@ class TestSaveAndLoad:
 
         db1 = Database(path=db_path)
         db1.create_table("cards", _make_schema())
-        score_schema = Schema(columns=[
-            Column(name="player", data_type=DataType.TEXT),
-            Column(name="score", data_type=DataType.INTEGER),
-        ])
+        score_schema = Schema(
+            columns=[
+                Column(name="player", data_type=DataType.TEXT),
+                Column(name="score", data_type=DataType.INTEGER),
+            ]
+        )
         scores = db1.create_table("scores", score_schema)
         scores.insert({"player": "Alice", "score": SCORE_9001})
         db1.save()
