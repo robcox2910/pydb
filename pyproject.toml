@@ -1,0 +1,181 @@
+[project]
+name = "pydb"
+dynamic = ["version"]
+description = "An educational database engine built from scratch in Python"
+readme = "README.md"
+requires-python = ">=3.14"
+license = {text = "MIT"}
+authors = [
+    { name = "Rob Cox" }
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Education",
+    "Topic :: Database",
+    "Typing :: Typed",
+]
+keywords = ["database", "sql", "storage-engine", "education", "learning"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/robcox2910/pydb"
+Repository = "https://github.com/robcox2910/pydb"
+Issues = "https://github.com/robcox2910/pydb/issues"
+Documentation = "https://robcox2910.github.io/pydb/"
+
+[project.scripts]
+pydb = "pydb.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.4",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.3",
+    "pre-commit>=4.0.1",
+    "pyright>=1.1.400",
+    "commitizen>=4.4.0",
+    "pip-audit>=2.10.0",
+]
+docs = [
+    "mkdocs-material>=9.5",
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/pydb/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pydb"]
+
+# Ruff configuration
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+exclude = ["src/pydb/_version.py"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "C90",    # mccabe (cyclomatic complexity)
+    "PTH",    # flake8-use-pathlib
+    "SIM",    # flake8-simplify
+    "TID",    # flake8-tidy-imports
+    "S",      # flake8-bandit (security)
+    "PERF",   # Perflint (performance)
+    "FURB",   # refurb (modernization)
+    "PIE",    # flake8-pie (misc pythonic)
+    "T10",    # flake8-debugger (no leftover breakpoints)
+    "T20",    # flake8-print (no leftover prints)
+    "ERA",    # eradicator (commented-out code)
+    "PL",     # Pylint rules (PLC, PLE, PLR, PLW)
+    "RET",    # flake8-return (consistent returns)
+    "ARG",    # flake8-unused-arguments
+    "FBT",    # flake8-boolean-trap
+    "DTZ",    # flake8-datetimez (timezone-aware)
+    "ICN",    # flake8-import-conventions
+    "PT",     # flake8-pytest-style
+    "D",      # pydocstyle (docstring conventions)
+    "RUF",    # Ruff-specific rules
+    "A",      # flake8-builtins (no shadowing builtins)
+    "BLE",    # flake8-blind-except (no bare except Exception)
+    "EM",     # flake8-errmsg (exception message hygiene)
+    "FLY",    # flynt (string concat -> f-strings)
+    "ISC",    # flake8-implicit-str-concat (catch missing commas)
+    "PGH",    # pygrep-hooks (no blanket type: ignore)
+    "RSE",    # flake8-raise (clean raise statements)
+    "SLF",    # flake8-self (no accessing private members externally)
+    "TRY",    # tryceratops (exception handling anti-patterns)
+]
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "D203",   # Incompatible with D211 (no-blank-line-before-class)
+    "D213",   # Incompatible with D212 (multi-line-summary-first-line)
+    "ISC001", # Conflicts with ruff format (single-line implicit concat)
+    "TRY003", # Conflicts with EM (long exception messages in raise)
+    "PIE807", # Conflicts with pyright strict (lambda factories preserve type info)
+    "PLW0108", # Conflicts with pyright strict (lambda factories preserve type info)
+    "FBT001", # Union-typed value params are not boolean flags
+    "FBT003", # Passing bool literals to union-typed params is not a boolean trap
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-args = 9
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",   # Use of assert
+    "SLF001", # Accessing private members in tests is fine
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+# Pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--verbose",
+    "--cov=src/pydb",
+    "--cov-report=term-missing",
+    "--cov-fail-under=80",
+]
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["src"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/.venv/*",
+    "*/_version.py",
+    "*/__main__.py",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+
+# Pyright configuration
+[tool.pyright]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+include = ["src", "tests"]
+venvPath = "."
+venv = ".venv"
+
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+extraPaths = ["."]
+reportPrivateUsage = false
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "scm"
