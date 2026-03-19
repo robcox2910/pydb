@@ -10,7 +10,7 @@ specific cards much faster.
 
 from collections.abc import Callable, Mapping
 
-from pydb.errors import PyDBError, RecordNotFoundError
+from pydb.errors import PyDBError, RecordNotFoundError, SchemaError
 from pydb.index import Index
 from pydb.record import Record, Value
 from pydb.schema import Schema
@@ -168,6 +168,7 @@ class Table:
 
         """
         self._schema.validate(values)
+        self._check_constraints(values)
         record_id = self._next_id
         self._next_id += 1
         record = Record(record_id=record_id, data=values)
@@ -257,6 +258,7 @@ class Table:
         merged = record.data
         merged.update(values)
         self._schema.validate(merged)
+        self._check_constraints(merged, exclude_record_id=record_id)
 
         # Update indexes for changed columns.
         for idx in self._indexes.values():
@@ -288,6 +290,44 @@ class Table:
             idx.delete(record[idx.column], record_id)
 
         del self._records[record_id]
+
+    def _check_constraints(
+        self,
+        values: Mapping[str, Value],
+        exclude_record_id: int | None = None,
+    ) -> None:
+        """Check NOT NULL, UNIQUE, and PRIMARY KEY constraints.
+
+        Args:
+            values: The column values to check.
+            exclude_record_id: A record ID to exclude from uniqueness
+                checks (used during UPDATE so the record doesn't
+                conflict with itself).
+
+        Raises:
+            SchemaError: If any constraint is violated.
+
+        """
+        for col in self._schema.columns:
+            if not (col.primary_key or col.not_null or col.unique):
+                continue
+
+            val = values.get(col.name)
+
+            # NOT NULL / PRIMARY KEY: value must be present.
+            if (col.not_null or col.primary_key) and val is None:
+                msg = f"Column {col.name!r} cannot be NULL"
+                raise SchemaError(msg)
+
+            # UNIQUE / PRIMARY KEY: no duplicate values.
+            if (col.unique or col.primary_key) and val is not None:
+                for record in self._records.values():
+                    if exclude_record_id is not None and record.record_id == exclude_record_id:
+                        continue
+                    if record[col.name] == val:
+                        constraint = "PRIMARY KEY" if col.primary_key else "UNIQUE"
+                        msg = f"{constraint} violation: {col.name!r} value {val!r} already exists"
+                        raise SchemaError(msg)
 
     def __repr__(self) -> str:
         """Return a developer-friendly string representation."""

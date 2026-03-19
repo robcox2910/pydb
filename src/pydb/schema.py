@@ -21,11 +21,17 @@ class Column:
     Args:
         name: The column name (e.g., "age").
         data_type: The type of data this column holds.
+        primary_key: Whether this column is the primary key.
+        not_null: Whether this column rejects NULL/missing values.
+        unique: Whether this column requires unique values.
 
     """
 
     name: str
     data_type: DataType
+    primary_key: bool = False
+    not_null: bool = False
+    unique: bool = False
 
 
 class Schema:

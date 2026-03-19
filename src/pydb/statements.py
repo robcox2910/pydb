@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from pydb.query import WhereClause
 from pydb.record import Value
-from pydb.types import DataType
+from pydb.schema import Column
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,12 +18,12 @@ class CreateTableStatement:
 
     Args:
         table: The table name to create.
-        columns: List of (name, data_type) pairs.
+        columns: List of Column definitions with optional constraints.
 
     """
 
     table: str
-    columns: list[tuple[str, DataType]]
+    columns: list[Column]
 
 
 @dataclass(frozen=True, slots=True)

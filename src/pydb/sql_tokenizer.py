@@ -65,6 +65,11 @@ KEYWORDS = frozenset(
         "MAX",
         "INDEX",
         "EXPLAIN",
+        "PRIMARY",
+        "KEY",
+        "NOT",
+        "NULL",
+        "UNIQUE",
         "TRUE",
         "FALSE",
     }
