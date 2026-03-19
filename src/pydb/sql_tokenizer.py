@@ -70,6 +70,9 @@ KEYWORDS = frozenset(
         "NOT",
         "NULL",
         "UNIQUE",
+        "IN",
+        "VIEW",
+        "AS",
         "TRUE",
         "FALSE",
     }

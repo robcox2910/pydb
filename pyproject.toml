@@ -130,6 +130,9 @@ max-args = 9
 "src/pydb/executor.py" = [
     "PLR0911", # Dispatch function has many return statements by design
 ]
+"src/pydb/query.py" = [
+    "PLR0911", # Match on all operator variants requires many returns
+]
 "src/pydb/sql_parser.py" = [
     "PLR0911", # Dispatch function has many return statements by design
 ]

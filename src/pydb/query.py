@@ -21,6 +21,7 @@ class Operator(StrEnum):
     GE = ">="
     LT = "<"
     LE = "<="
+    IN = "IN"
 
 
 class SortDirection(StrEnum):
@@ -28,6 +29,21 @@ class SortDirection(StrEnum):
 
     ASC = "ASC"
     DESC = "DESC"
+
+
+@dataclass(frozen=True, slots=True)
+class Subquery:
+    """Wrap an inner SELECT query used as a value in a WHERE clause.
+
+    The executor evaluates the inner query and uses the result as a
+    scalar value (for =, >, etc.) or a list (for IN).
+
+    Args:
+        query: The inner SELECT query.
+
+    """
+
+    query: Query
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,13 +55,13 @@ class Condition:
     Args:
         column: The column name to test.
         operator: The comparison operator.
-        value: The value to compare against.
+        value: The value to compare against, or a Subquery.
 
     """
 
     column: str
     operator: Operator
-    value: Value
+    value: Value | Subquery | list[Value]
 
     def matches(self, record: Record) -> bool:
         """Check whether a record satisfies this condition.
@@ -72,6 +88,8 @@ class Condition:
                 return record_value < target
             case Operator.LE:
                 return record_value <= target
+            case Operator.IN:
+                return record_value in target
         msg = f"Unknown operator: {self.operator}"
         raise ValueError(msg)
 

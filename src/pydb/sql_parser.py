@@ -18,6 +18,7 @@ from pydb.query import (
     OrderBy,
     Query,
     SortDirection,
+    Subquery,
     WhereClause,
 )
 from pydb.record import Value
@@ -178,7 +179,7 @@ class _Parser:
         order_by: OrderBy | None = None
         limit: int | None = None
 
-        while self._peek().token_type != TokenType.EOF:
+        while self._peek().token_type not in (TokenType.EOF, TokenType.RPAREN):
             kw = self._peek()
             if kw.token_type == TokenType.KEYWORD and kw.value == "JOIN":
                 join = self._parse_join()
@@ -502,8 +503,11 @@ class _Parser:
     def _parse_condition(self) -> Condition:
         """Parse a single comparison condition: column op value.
 
-        The column can be a regular name, dot-notation, or an aggregate
-        function call (used in HAVING clauses).
+        Supports:
+        - Regular: column > 50
+        - Aggregate in HAVING: COUNT(*) > 1
+        - IN subquery: column IN (SELECT ...)
+        - Scalar subquery: column > (SELECT AVG(...) FROM ...)
         """
         token = self._peek()
         if token.token_type == TokenType.KEYWORD and token.value in _AGG_FUNCS:
@@ -511,11 +515,39 @@ class _Parser:
             column = agg.alias
         else:
             column = self._parse_qualified_name()
-        op_token = self._expect(TokenType.OPERATOR)
 
+        # Handle IN (SELECT ...) or IN (val, val, ...).
+        if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "IN":
+            self._advance()
+            self._expect(TokenType.LPAREN)
+            if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "SELECT":
+                inner = self._parse_select()
+                self._expect(TokenType.RPAREN)
+                return Condition(column=column, operator=Operator.IN, value=Subquery(query=inner))
+            msg = "IN requires a subquery: IN (SELECT ...)"
+            raise ParseError(msg)
+
+        op_token = self._expect(TokenType.OPERATOR)
         if op_token.value not in _OPERATOR_MAP:
             msg = f"Unknown operator: {op_token.value!r}"
             raise ParseError(msg)
+
+        # Check for scalar subquery: op (SELECT ...).
+        if self._peek().token_type == TokenType.LPAREN:
+            next_after = self._tokens[self._pos + 1] if self._pos + 1 < len(self._tokens) else None
+            if (
+                next_after
+                and next_after.token_type == TokenType.KEYWORD
+                and next_after.value == "SELECT"
+            ):
+                self._expect(TokenType.LPAREN)
+                inner = self._parse_select()
+                self._expect(TokenType.RPAREN)
+                return Condition(
+                    column=column,
+                    operator=_OPERATOR_MAP[op_token.value],
+                    value=Subquery(query=inner),
+                )
 
         return Condition(
             column=column, operator=_OPERATOR_MAP[op_token.value], value=self._parse_value()

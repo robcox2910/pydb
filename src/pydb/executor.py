@@ -22,8 +22,10 @@ from pydb.query import (
     And,
     Condition,
     Operator,
+    Or,
     Query,
     SortDirection,
+    Subquery,
     WhereClause,
 )
 from pydb.record import Record, Value
@@ -101,15 +103,19 @@ def _execute_select(query: Query, database: Database) -> ExecuteResult:
     if query.join is not None:
         return _execute_select_with_join(query, database, left_table)
 
-    return _execute_simple_select(query, left_table)
+    return _execute_simple_select(query, left_table, database)
 
 
-def _execute_simple_select(query: Query, table: Table) -> ExecuteResult:
+def _execute_simple_select(query: Query, table: Table, database: Database) -> ExecuteResult:
     """Execute a SELECT without a JOIN."""
     valid_cols = set(table.schema.column_names)
-    if query.where is not None:
-        _validate_where_columns(query.where, valid_cols)
-        records = table.select(where=query.where.matches)
+
+    where = query.where
+    if where is not None:
+        # Resolve any subqueries in the WHERE clause before filtering.
+        where = _resolve_subqueries(where, database)
+        _validate_where_columns(where, valid_cols)
+        records = table.select(where=where.matches)
     else:
         records = table.select()
 
@@ -320,6 +326,8 @@ def _compare(left: Any, op: Operator, right: Any) -> bool:
             result = left < right
         case Operator.LE:
             result = left <= right
+        case Operator.IN:
+            result = left in right
     return result  # type: ignore[possibly-undefined]
 
 
@@ -489,3 +497,37 @@ def _execute_explain(stmt: ExplainStatement, database: Database) -> ExecuteResul
 
     plan = plan_query(stmt.query, table)
     return [{"plan": plan.strategy}]
+
+
+def _resolve_subqueries(clause: WhereClause, database: Database) -> WhereClause:
+    """Recursively resolve any Subquery values in a WHERE clause.
+
+    Runs each subquery against the database and replaces the Subquery
+    object with the actual result value(s).
+    """
+    if isinstance(clause, Condition):
+        if not isinstance(clause.value, Subquery):
+            return clause
+        inner_results = execute(clause.value.query, database)
+        if clause.operator == Operator.IN:
+            # IN subquery: collect all values from the first column.
+            if not inner_results:
+                resolved: Value | list[Value] = []
+            else:
+                first_col = next(iter(inner_results[0]))
+                resolved = [row[first_col] for row in inner_results]
+        else:
+            # Scalar subquery: must return exactly one row, one column.
+            if len(inner_results) != 1 or len(inner_results[0]) != 1:
+                msg = "Scalar subquery must return exactly one row and one column"
+                raise QueryError(msg)
+            resolved = next(iter(inner_results[0].values()))
+        return Condition(column=clause.column, operator=clause.operator, value=resolved)
+    if isinstance(clause, And):
+        return And(
+            _resolve_subqueries(clause.left, database), _resolve_subqueries(clause.right, database)
+        )
+    # Must be Or.
+    return Or(
+        _resolve_subqueries(clause.left, database), _resolve_subqueries(clause.right, database)
+    )
