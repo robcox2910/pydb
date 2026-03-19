@@ -134,6 +134,32 @@ class OrderBy:
     direction: SortDirection = SortDirection.ASC
 
 
+class AggFunc(StrEnum):
+    """Supported aggregate functions."""
+
+    COUNT = "COUNT"
+    SUM = "SUM"
+    AVG = "AVG"
+    MIN = "MIN"
+    MAX = "MAX"
+
+
+@dataclass(frozen=True, slots=True)
+class AggregateColumn:
+    """An aggregate function call in a SELECT list.
+
+    Args:
+        function: The aggregate function (COUNT, SUM, etc.).
+        column: The column to aggregate, or "*" for COUNT(*).
+        alias: Display name for the result (e.g., "COUNT(*)").
+
+    """
+
+    function: AggFunc
+    column: str
+    alias: str
+
+
 @dataclass(frozen=True, slots=True)
 class JoinClause:
     """Describe a JOIN between two tables.
@@ -169,7 +195,10 @@ class Query:
 
     table: str
     columns: list[str] = field(default_factory=lambda: [])
+    aggregates: list[AggregateColumn] = field(default_factory=lambda: [])
     join: JoinClause | None = None
     where: WhereClause | None = None
+    group_by: list[str] = field(default_factory=lambda: [])
+    having: WhereClause | None = None
     order_by: OrderBy | None = None
     limit: int | None = None

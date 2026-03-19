@@ -15,7 +15,16 @@ from typing import Any
 
 from pydb.database import Database
 from pydb.errors import PyDBError
-from pydb.query import And, Condition, Operator, Query, SortDirection, WhereClause
+from pydb.query import (
+    AggFunc,
+    AggregateColumn,
+    And,
+    Condition,
+    Operator,
+    Query,
+    SortDirection,
+    WhereClause,
+)
 from pydb.record import Record, Value
 from pydb.schema import Column, Schema
 from pydb.statements import (
@@ -94,6 +103,10 @@ def _execute_simple_select(query: Query, table: Table) -> ExecuteResult:
     else:
         records = table.select()
 
+    # If there are aggregate functions, delegate to aggregate execution.
+    if query.aggregates:
+        return _execute_aggregate(query, records)
+
     if query.order_by is not None:
         col = query.order_by.column
         if col not in valid_cols:
@@ -106,6 +119,82 @@ def _execute_simple_select(query: Query, table: Table) -> ExecuteResult:
         records = records[: query.limit]
 
     return _project(records, query.columns, table.schema.column_names)
+
+
+def _execute_aggregate(query: Query, records: list[Record]) -> ExecuteResult:
+    """Execute a query with aggregate functions and optional GROUP BY."""
+    groups = _group_records(records, query.group_by) if query.group_by else {"": records}
+
+    result: ExecuteResult = []
+    for group_records in groups.values():
+        row: dict[str, Value] = {}
+
+        # Add GROUP BY column values.
+        if query.group_by and group_records:
+            for col in query.group_by:
+                row[col] = group_records[0][col]
+
+        # Add plain columns (must be in GROUP BY).
+        for col in query.columns:
+            if col not in query.group_by:
+                msg = f"Column {col!r} must appear in GROUP BY or an aggregate function"
+                raise QueryError(msg)
+            if group_records:
+                row[col] = group_records[0][col]
+
+        # Compute aggregates.
+        for agg in query.aggregates:
+            row[agg.alias] = _compute_aggregate(agg, group_records)
+
+        result.append(row)
+
+    # Apply HAVING filter.
+    if query.having is not None:
+        result = [row for row in result if _matches_dict(query.having, row)]
+
+    # Apply ORDER BY.
+    if query.order_by is not None:
+        col = query.order_by.column
+        reverse = query.order_by.direction == SortDirection.DESC
+        result = sorted(result, key=lambda r: r[col], reverse=reverse)  # type: ignore[return-value]
+
+    # Apply LIMIT.
+    if query.limit is not None:
+        result = result[: query.limit]
+
+    return result
+
+
+def _group_records(records: list[Record], group_by: list[str]) -> dict[str, list[Record]]:
+    """Group records by the values of the GROUP BY columns.
+
+    Returns:
+        A dict mapping group key strings to lists of records.
+
+    """
+    groups: dict[str, list[Record]] = {}
+    for record in records:
+        key = "|".join(str(record[col]) for col in group_by)
+        groups.setdefault(key, []).append(record)
+    return groups
+
+
+def _compute_aggregate(agg: AggregateColumn, records: list[Record]) -> Value:
+    """Compute a single aggregate function over a group of records."""
+    match agg.function:
+        case AggFunc.COUNT:
+            return len(records)
+        case AggFunc.SUM:
+            return sum(int(r[agg.column]) for r in records)
+        case AggFunc.AVG:
+            total = sum(float(r[agg.column]) for r in records)
+            return total / len(records) if records else 0.0
+        case AggFunc.MIN:
+            values: list[Any] = [r[agg.column] for r in records]
+            return min(values) if values else 0
+        case AggFunc.MAX:
+            vals: list[Any] = [r[agg.column] for r in records]
+            return max(vals) if vals else 0
 
 
 def _execute_select_with_join(
