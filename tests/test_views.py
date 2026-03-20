@@ -16,6 +16,7 @@ from pydb.statements import CreateViewStatement, DropViewStatement
 
 ONE_ROW = 1
 TWO_ROWS = 2
+THREE_ROWS = 3
 
 
 def _make_db(tmp_path: Path) -> Database:
@@ -58,7 +59,7 @@ class TestExecuteViews:
             db,
         )
         rows = execute(parse_sql("SELECT * FROM strong"), db)
-        assert len(rows) == TWO_ROWS + ONE_ROW
+        assert len(rows) == THREE_ROWS
         names = {str(r["name"]) for r in rows}
         assert "Pikachu" in names
         assert "Squirtle" not in names

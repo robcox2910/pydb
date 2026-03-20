@@ -18,8 +18,13 @@ from pydb.sql_parser import parse_sql
 ONE_ROW = 1
 TWO_ROWS = 2
 THREE_ROWS = 3
-TOTAL_POWER = 155
-AVG_POWER = 51.67
+FOUR_ROWS = 4
+TOTAL_SUM = 215
+AVERAGE_POWER = 53.75
+MIN_POWER = 48
+MAX_POWER = 60
+ELECTRIC_SUM = 115
+FIRE_SUM = 52
 
 
 def _make_db(tmp_path: Path) -> Database:
@@ -99,40 +104,40 @@ class TestExecuteAggregatesNoGroupBy:
         db = _make_db(tmp_path)
         rows = execute(parse_sql("SELECT COUNT(*) FROM cards"), db)
         assert len(rows) == ONE_ROW
-        assert rows[0]["COUNT(*)"] == 4  # noqa: PLR2004
+        assert rows[0]["COUNT(*)"] == FOUR_ROWS
 
     def test_sum(self, tmp_path: Path) -> None:
         """SUM(power) should add up all power values."""
         db = _make_db(tmp_path)
         rows = execute(parse_sql("SELECT SUM(power) FROM cards"), db)
-        assert rows[0]["SUM(power)"] == 215  # noqa: PLR2004
+        assert rows[0]["SUM(power)"] == TOTAL_SUM
 
     def test_avg(self, tmp_path: Path) -> None:
         """AVG(power) should calculate the average."""
         db = _make_db(tmp_path)
         rows = execute(parse_sql("SELECT AVG(power) FROM cards"), db)
-        assert rows[0]["AVG(power)"] == 53.75  # noqa: PLR2004
+        assert rows[0]["AVG(power)"] == AVERAGE_POWER
 
     def test_min(self, tmp_path: Path) -> None:
         """MIN(power) should find the smallest value."""
         db = _make_db(tmp_path)
         rows = execute(parse_sql("SELECT MIN(power) FROM cards"), db)
-        assert rows[0]["MIN(power)"] == 48  # noqa: PLR2004
+        assert rows[0]["MIN(power)"] == MIN_POWER
 
     def test_max(self, tmp_path: Path) -> None:
         """MAX(power) should find the largest value."""
         db = _make_db(tmp_path)
         rows = execute(parse_sql("SELECT MAX(power) FROM cards"), db)
-        assert rows[0]["MAX(power)"] == 60  # noqa: PLR2004
+        assert rows[0]["MAX(power)"] == MAX_POWER
 
     def test_multiple_aggregates(self, tmp_path: Path) -> None:
         """Multiple aggregates in one query should all compute."""
         db = _make_db(tmp_path)
         rows = execute(parse_sql("SELECT COUNT(*), MIN(power), MAX(power) FROM cards"), db)
         assert len(rows) == ONE_ROW
-        assert rows[0]["COUNT(*)"] == 4  # noqa: PLR2004
-        assert rows[0]["MIN(power)"] == 48  # noqa: PLR2004
-        assert rows[0]["MAX(power)"] == 60  # noqa: PLR2004
+        assert rows[0]["COUNT(*)"] == FOUR_ROWS
+        assert rows[0]["MIN(power)"] == MIN_POWER
+        assert rows[0]["MAX(power)"] == MAX_POWER
 
 
 class TestExecuteGroupBy:
@@ -152,16 +157,16 @@ class TestExecuteGroupBy:
         db = _make_db(tmp_path)
         rows = execute(parse_sql("SELECT type, SUM(power) FROM cards GROUP BY type"), db)
         type_sums = {str(r["type"]): r["SUM(power)"] for r in rows}
-        assert type_sums["Electric"] == 115  # noqa: PLR2004
-        assert type_sums["Fire"] == 52  # noqa: PLR2004
+        assert type_sums["Electric"] == ELECTRIC_SUM
+        assert type_sums["Fire"] == FIRE_SUM
 
     def test_group_by_with_max(self, tmp_path: Path) -> None:
         """GROUP BY type with MAX should show strongest per type."""
         db = _make_db(tmp_path)
         rows = execute(parse_sql("SELECT type, MAX(power) FROM cards GROUP BY type"), db)
         type_max = {str(r["type"]): r["MAX(power)"] for r in rows}
-        assert type_max["Electric"] == 60  # noqa: PLR2004
-        assert type_max["Water"] == 48  # noqa: PLR2004
+        assert type_max["Electric"] == MAX_POWER
+        assert type_max["Water"] == MIN_POWER
 
 
 class TestExecuteHaving:

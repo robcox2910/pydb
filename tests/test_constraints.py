@@ -16,6 +16,7 @@ from pydb.statements import CreateTableStatement
 from pydb.types import DataType
 
 ONE_ROW = 1
+TWO_ROWS = 2
 
 
 class TestParseConstraints:
@@ -76,7 +77,7 @@ class TestPrimaryKey:
         execute(parse_sql("INSERT INTO t VALUES (1, 'Alice')"), db)
         execute(parse_sql("INSERT INTO t VALUES (2, 'Bob')"), db)
         rows = execute(parse_sql("SELECT * FROM t"), db)
-        assert len(rows) == 2  # noqa: PLR2004
+        assert len(rows) == TWO_ROWS
 
     def test_update_preserves_own_pk(self, tmp_path: Path) -> None:
         """Updating a row without changing the PK should succeed."""
@@ -115,7 +116,7 @@ class TestUnique:
         execute(parse_sql("INSERT INTO t VALUES ('a@b.com', 'Alice')"), db)
         execute(parse_sql("INSERT INTO t VALUES ('b@b.com', 'Bob')"), db)
         rows = execute(parse_sql("SELECT * FROM t"), db)
-        assert len(rows) == 2  # noqa: PLR2004
+        assert len(rows) == TWO_ROWS
 
     def test_update_rejects_duplicate(self, tmp_path: Path) -> None:
         """Updating to a duplicate unique value should fail."""
@@ -153,7 +154,7 @@ class TestEndToEndConstraints:
 
         # Verify data.
         rows = execute(parse_sql("SELECT * FROM users ORDER BY id"), db)
-        assert len(rows) == 2  # noqa: PLR2004
+        assert len(rows) == TWO_ROWS
         assert rows[0]["name"] == "Alice"
 
         # Verify PK uniqueness.

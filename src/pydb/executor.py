@@ -27,6 +27,7 @@ from pydb.query import (
     SortDirection,
     Subquery,
     WhereClause,
+    compare_values,
 )
 from pydb.record import Record, Value
 from pydb.schema import Schema
@@ -320,35 +321,10 @@ def _matches_dict(clause: WhereClause, row: dict[str, Value]) -> bool:
     on plain dicts produced by JOINs.
     """
     if isinstance(clause, Condition):
-        record_value: Any = row[clause.column]
-        target: Any = clause.value
-        return _compare(record_value, clause.operator, target)
+        return compare_values(row[clause.column], clause.operator, clause.value)
     if isinstance(clause, And):
         return _matches_dict(clause.left, row) and _matches_dict(clause.right, row)
     return _matches_dict(clause.left, row) or _matches_dict(clause.right, row)
-
-
-def _compare(left: Any, op: Operator, right: Any) -> bool:
-    """Evaluate a comparison between two values."""
-    match op:
-        case Operator.EQ:
-            result = left == right
-        case Operator.NE:
-            result = left != right
-        case Operator.GT:
-            result = left > right
-        case Operator.GE:
-            result = left >= right
-        case Operator.LT:
-            result = left < right
-        case Operator.LE:
-            result = left <= right
-        case Operator.IN:
-            result = left in right
-        case _:
-            msg = f"Unknown operator: {op}"
-            raise ValueError(msg)
-    return result
 
 
 def _execute_create_table(stmt: CreateTableStatement, database: Database) -> ExecuteResult:

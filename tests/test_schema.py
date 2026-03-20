@@ -11,6 +11,7 @@ from pydb.schema import Column, Schema
 from pydb.types import DataType
 
 EXPECTED_COLUMN_COUNT = 3
+TWO_COLUMNS = 2
 POWER_55 = 55
 PI = 3.14
 
@@ -26,7 +27,7 @@ class TestSchemaCreation:
                 Column(name="power", data_type=DataType.INTEGER),
             ]
         )
-        assert len(schema.columns) == 2  # noqa: PLR2004
+        assert len(schema.columns) == TWO_COLUMNS
 
     def test_schema_column_names(self) -> None:
         """The column_names property should return names in order."""

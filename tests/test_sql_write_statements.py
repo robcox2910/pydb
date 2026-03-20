@@ -26,7 +26,7 @@ POWER_55 = 55
 POWER_52 = 52
 POWER_48 = 48
 POWER_60 = 60
-TWO_COLUMNS = 2
+TWO_ROWS = 2
 THREE_ROWS = 3
 ALICE_SCORE = 250
 
@@ -39,7 +39,7 @@ class TestParseCreateTable:
         stmt = parse_sql("CREATE TABLE cards (name TEXT, power INTEGER)")
         assert isinstance(stmt, CreateTableStatement)
         assert stmt.table == "cards"
-        assert len(stmt.columns) == TWO_COLUMNS
+        assert len(stmt.columns) == TWO_ROWS
         assert stmt.columns[0].name == "name"
         assert stmt.columns[0].data_type == DataType.TEXT
         assert stmt.columns[1].name == "power"
@@ -276,7 +276,7 @@ class TestExecuteDelete:
         result = execute(parse_sql("DELETE FROM cards WHERE name = 'Pikachu'"), db)
         assert "1 row deleted" in str(result[0]["result"])
         rows = execute(parse_sql("SELECT * FROM cards"), db)
-        assert len(rows) == TWO_COLUMNS
+        assert len(rows) == TWO_ROWS
 
     def test_delete_all(self, tmp_path: Path) -> None:
         """DELETE without WHERE should remove all rows."""
@@ -309,7 +309,7 @@ class TestEndToEnd:
 
         execute(parse_sql("DELETE FROM scores WHERE score < 200"), db)
         rows = execute(parse_sql("SELECT * FROM scores"), db)
-        assert len(rows) == TWO_COLUMNS
+        assert len(rows) == TWO_ROWS
 
         execute(parse_sql("DROP TABLE scores"), db)
         assert "scores" not in db.table_names()

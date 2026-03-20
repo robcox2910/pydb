@@ -24,6 +24,40 @@ class Operator(StrEnum):
     IN = "IN"
 
 
+def compare_values(left: Any, op: Operator, right: Any) -> bool:
+    """Compare two values using the given operator.
+
+    This is the single source of truth for all comparison logic in PyDB.
+
+    Args:
+        left: The left-hand value.
+        op: The comparison operator.
+        right: The right-hand value.
+
+    Returns:
+        True if the comparison holds.
+
+    """
+    match op:
+        case Operator.EQ:
+            return left == right
+        case Operator.NE:
+            return left != right
+        case Operator.GT:
+            return left > right
+        case Operator.GE:
+            return left >= right
+        case Operator.LT:
+            return left < right
+        case Operator.LE:
+            return left <= right
+        case Operator.IN:
+            return left in right
+        case _:
+            msg = f"Unknown operator: {op}"
+            raise ValueError(msg)
+
+
 class SortDirection(StrEnum):
     """Sort direction for ORDER BY."""
 
@@ -73,25 +107,7 @@ class Condition:
             True if the record matches the condition.
 
         """
-        record_value: Any = record[self.column]
-        target: Any = self.value
-        match self.operator:
-            case Operator.EQ:
-                return record_value == target
-            case Operator.NE:
-                return record_value != target
-            case Operator.GT:
-                return record_value > target
-            case Operator.GE:
-                return record_value >= target
-            case Operator.LT:
-                return record_value < target
-            case Operator.LE:
-                return record_value <= target
-            case Operator.IN:
-                return record_value in target
-        msg = f"Unknown operator: {self.operator}"
-        raise ValueError(msg)
+        return compare_values(record[self.column], self.operator, self.value)
 
 
 @dataclass(frozen=True, slots=True)
