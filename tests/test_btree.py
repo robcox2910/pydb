@@ -20,6 +20,7 @@ RECORD_7 = 7
 RECORD_8 = 8
 RECORD_9 = 9
 RECORD_10 = 10
+EXPECTED_CHILDREN = 2
 
 
 class TestBTreeCreation:
@@ -88,7 +89,7 @@ class TestBTreeInsert:
         tree.insert("C", RECORD_3)
         # Root should no longer be a leaf after split.
         assert not tree.root.leaf
-        assert len(tree.root.children) == 2  # noqa: PLR2004
+        assert len(tree.root.children) == EXPECTED_CHILDREN
 
     def test_all_keys_sorted_after_many_inserts(self) -> None:
         """After many inserts, all_keys should return sorted order."""

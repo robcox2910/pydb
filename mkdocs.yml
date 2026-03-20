@@ -42,6 +42,9 @@ nav:
     - Views: concepts/views.md
     - Transactions: concepts/transactions.md
     - REPL: concepts/repl.md
+    - CSV Import/Export: concepts/csv.md
+    - Write-Ahead Log: concepts/wal.md
+    - MVCC: concepts/mvcc.md
 
 markdown_extensions:
   - admonition
