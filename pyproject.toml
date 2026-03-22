@@ -114,6 +114,7 @@ ignore = [
     "PLW0108", # Conflicts with pyright strict (lambda factories preserve type info)
     "FBT001", # Union-typed value params are not boolean flags
     "FBT003", # Passing bool literals to union-typed params is not a boolean trap
+    "S608",   # SQL constructed from constants, not user input
 ]
 
 [tool.ruff.lint.mccabe]
