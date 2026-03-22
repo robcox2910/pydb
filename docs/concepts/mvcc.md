@@ -51,3 +51,13 @@ store.vacuum(oldest_active_version=5)
 - Snapshot isolation: two versions see different data.
 - Vacuum removes old deleted rows.
 - Vacuum preserves rows still visible to active readers.
+
+## What's Next?
+
+You've completed the PyDB learning path! You've built a complete
+relational database engine from scratch -- tables, schemas, indexes,
+SQL parsing, joins, aggregations, transactions, and more. That's an
+incredible achievement.
+
+Head to [PyStack](https://github.com/robcox2910/pystack) to see how
+PyDB connects with PyOS and Pebble in one unified platform.

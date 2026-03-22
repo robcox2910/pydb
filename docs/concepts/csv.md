@@ -54,3 +54,7 @@ automatically converted to the right type -- "55" becomes the integer
 - Round-trip (export → import) preserves all data.
 - Missing files raise a clear error.
 - Wrong types raise a clear error with the row number.
+
+## Next Up
+
+Head to [Write-Ahead Log](wal.md) to learn how databases survive crashes.

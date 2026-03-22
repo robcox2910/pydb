@@ -42,3 +42,8 @@ On startup, the database reads the log:
 - `get_operations()` retrieves ops for a specific transaction.
 - Corrupted log entries are skipped gracefully.
 - `clear()` empties the log after recovery.
+
+## Next Up
+
+Head to [MVCC](mvcc.md) to learn how databases handle multiple
+users at the same time.
