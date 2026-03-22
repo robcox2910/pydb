@@ -1,9 +1,14 @@
 """Query executor -- the librarian who answers your questions.
 
+Think of this module like a librarian at a desk.  You hand them a slip of
+paper (a parsed query or statement) and tell them which library to look in
+(the database).  The librarian reads the slip, walks to the right shelf,
+and comes back with an answer.
+
 The executor takes a query or statement and a database, then carries out
 the requested operation:
 
-- SELECT: filter → sort → limit → project → return results
+- SELECT: filter -> sort -> limit -> project -> return results
 - CREATE TABLE: create a new table with the given schema
 - DROP TABLE: remove a table
 - INSERT: add a new record
@@ -54,9 +59,129 @@ class QueryError(PyDBError):
 # The result of executing any SQL statement.
 ExecuteResult = list[dict[str, Value]]
 
+# ---------------------------------------------------------------------------
+# Shared helpers -- small tools every handler can borrow
+# ---------------------------------------------------------------------------
+
+
+def _get_table(database: Database, table_name: str, operation: str) -> Table:
+    """Look up a table in the database, raising a clear error on failure.
+
+    Think of this like asking the librarian to fetch a specific book.
+    If the book doesn't exist, you get a helpful error instead of a crash.
+
+    Args:
+        database: The database to search.
+        table_name: The name of the table to find.
+        operation: A label like "INSERT" for the error message.
+
+    Raises:
+        QueryError: If the table does not exist.
+
+    """
+    try:
+        return database.get_table(table_name)
+    except PyDBError as exc:
+        msg = f"{operation} failed: {exc}"
+        raise QueryError(msg) from exc
+
+
+def _wrap_error(operation: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run *fn* and re-raise any PyDBError as a QueryError.
+
+    Like a safety net: if something goes wrong inside the library,
+    this catches it and gives you a friendlier error message.
+
+    Args:
+        operation: A label like "CREATE TABLE" for the error message.
+        fn: The function to call.
+        *args: Positional arguments forwarded to *fn*.
+        **kwargs: Keyword arguments forwarded to *fn*.
+
+    Raises:
+        QueryError: If *fn* raises a PyDBError.
+
+    """
+    try:
+        return fn(*args, **kwargs)
+    except PyDBError as exc:
+        msg = f"{operation} failed: {exc}"
+        raise QueryError(msg) from exc
+
+
+def _result_message(message: str) -> ExecuteResult:
+    """Create a single-row result with a message."""
+    return [{"result": message}]
+
+
+def _apply_order_by(rows: ExecuteResult, query: Query) -> ExecuteResult:
+    """Sort result rows by the query's ORDER BY clause (if any).
+
+    Like sorting a stack of index cards alphabetically or by number --
+    this helper does the sorting step so every handler doesn't have to
+    repeat the same code.
+    """
+    if query.order_by is None:
+        return rows
+    col = query.order_by.column
+    reverse = query.order_by.direction == SortDirection.DESC
+    return sorted(rows, key=lambda r: r[col], reverse=reverse)  # type: ignore[return-value]
+
+
+def _apply_limit(rows: ExecuteResult, query: Query) -> ExecuteResult:
+    """Trim result rows to the query's LIMIT count (if any).
+
+    Like only taking the top N cards from a sorted pile.
+    """
+    if query.limit is None:
+        return rows
+    return rows[: query.limit]
+
+
+def _apply_where_on_dicts(rows: ExecuteResult, query: Query) -> ExecuteResult:
+    """Filter dict rows using the query's WHERE clause (if any).
+
+    Works on plain dicts (e.g. from JOINs or views) rather than Record
+    objects.
+    """
+    if query.where is None:
+        return rows
+    return [row for row in rows if _matches_dict(query.where, row)]
+
+
+def _apply_column_projection(rows: ExecuteResult, query: Query) -> ExecuteResult:
+    """Keep only the columns listed in the SELECT clause (if any).
+
+    Like highlighting certain columns on a spreadsheet and hiding the rest.
+    """
+    if not query.columns:
+        return rows
+    return [{c: row[c] for c in query.columns} for row in rows]
+
+
+def _apply_post_processing(rows: ExecuteResult, query: Query) -> ExecuteResult:
+    """Apply the standard WHERE -> ORDER BY -> LIMIT -> PROJECT pipeline.
+
+    Many query paths need the same four steps applied to dict rows.
+    This helper chains them together in the correct order so we only
+    write the logic once.
+    """
+    result = _apply_where_on_dicts(rows, query)
+    result = _apply_order_by(result, query)
+    result = _apply_limit(result, query)
+    return _apply_column_projection(result, query)
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
 
 def execute(query_or_stmt: Query | Statement, database: Database) -> ExecuteResult:
     """Execute a SQL query or statement against a database.
+
+    This is the front desk of the library -- you hand in your request and
+    the right specialist handles it.
 
     Args:
         query_or_stmt: The parsed SQL to execute.
@@ -94,9 +219,9 @@ def execute(query_or_stmt: Query | Statement, database: Database) -> ExecuteResu
     return _execute_drop_view(query_or_stmt, database)
 
 
-def _result_message(message: str) -> ExecuteResult:
-    """Create a single-row result with a message."""
-    return [{"result": message}]
+# ---------------------------------------------------------------------------
+# SELECT execution
+# ---------------------------------------------------------------------------
 
 
 def _execute_select(query: Query, database: Database) -> ExecuteResult:
@@ -106,13 +231,9 @@ def _execute_select(query: Query, database: Database) -> ExecuteResult:
     if view_query is not None:
         # Run the view's stored query, then apply outer clauses.
         view_results = execute(view_query, database)
-        return _apply_outer_clauses(view_results, query)
+        return _apply_post_processing(view_results, query)
 
-    try:
-        left_table = database.get_table(query.table)
-    except PyDBError as exc:
-        msg = f"Query failed: {exc}"
-        raise QueryError(msg) from exc
+    left_table = _get_table(database, query.table, "Query")
 
     # If there's a JOIN, produce combined rows from both tables.
     if query.join is not None:
@@ -153,7 +274,11 @@ def _execute_simple_select(query: Query, table: Table, database: Database) -> Ex
 
 
 def _execute_aggregate(query: Query, records: list[Record]) -> ExecuteResult:
-    """Execute a query with aggregate functions and optional GROUP BY."""
+    """Execute a query with aggregate functions and optional GROUP BY.
+
+    Aggregates are like summary stats: instead of showing every row,
+    you get a single answer (like COUNT or SUM) for each group.
+    """
     groups = _group_records(records, query.group_by) if query.group_by else {(): records}
 
     result: ExecuteResult = []
@@ -183,23 +308,17 @@ def _execute_aggregate(query: Query, records: list[Record]) -> ExecuteResult:
     if query.having is not None:
         result = [row for row in result if _matches_dict(query.having, row)]
 
-    # Apply ORDER BY.
-    if query.order_by is not None:
-        col = query.order_by.column
-        reverse = query.order_by.direction == SortDirection.DESC
-        result = sorted(result, key=lambda r: r[col], reverse=reverse)  # type: ignore[return-value]
-
-    # Apply LIMIT.
-    if query.limit is not None:
-        result = result[: query.limit]
-
-    return result
+    # Apply ORDER BY and LIMIT using shared helpers.
+    result = _apply_order_by(result, query)
+    return _apply_limit(result, query)
 
 
 def _group_records(
     records: list[Record], group_by: list[str]
 ) -> dict[tuple[Value, ...], list[Record]]:
     """Group records by the values of the GROUP BY columns.
+
+    Like sorting trading cards into piles by team -- each pile is a group.
 
     Returns:
         A dict mapping group keys to lists of records.
@@ -231,6 +350,11 @@ def _compute_aggregate(agg: AggregateColumn, records: list[Record]) -> Value:
             return max(vals) if vals else 0
 
 
+# ---------------------------------------------------------------------------
+# JOIN execution
+# ---------------------------------------------------------------------------
+
+
 def _execute_select_with_join(
     query: Query,
     database: Database,
@@ -240,11 +364,7 @@ def _execute_select_with_join(
     join = query.join
     assert join is not None  # Caller guarantees this.  # noqa: S101
 
-    try:
-        right_table = database.get_table(join.table)
-    except PyDBError as exc:
-        msg = f"JOIN failed: {exc}"
-        raise QueryError(msg) from exc
+    right_table = _get_table(database, join.table, "JOIN")
 
     left_name = left_table.name
     right_name = right_table.name
@@ -268,25 +388,8 @@ def _execute_select_with_join(
                     row[f"{right_name}.{col}"] = right_rec[col]
                 combined.append(row)
 
-    # Apply WHERE filter on combined rows.
-    if query.where is not None:
-        combined = [row for row in combined if _matches_dict(query.where, row)]
-
-    # Apply ORDER BY.
-    if query.order_by is not None:
-        col = query.order_by.column
-        reverse = query.order_by.direction == SortDirection.DESC
-        combined = sorted(combined, key=lambda r: r[col], reverse=reverse)  # type: ignore[return-value]
-
-    # Apply LIMIT.
-    if query.limit is not None:
-        combined = combined[: query.limit]
-
-    # Project columns.
-    if query.columns:
-        combined = [{col: row[col] for col in query.columns} for row in combined]
-
-    return combined
+    # Apply WHERE, ORDER BY, LIMIT, and column projection.
+    return _apply_post_processing(combined, query)
 
 
 def _resolve_column(qualified: str, left_table: str, right_table: str) -> str:
@@ -314,112 +417,22 @@ def _resolve_column(qualified: str, left_table: str, right_table: str) -> str:
     return parts[1]
 
 
+# ---------------------------------------------------------------------------
+# WHERE helpers
+# ---------------------------------------------------------------------------
+
+
 def _matches_dict(clause: WhereClause, row: dict[str, Value]) -> bool:
     """Check if a combined row dict matches a WHERE clause.
 
     Unlike Condition.matches (which works on Record objects), this works
-    on plain dicts produced by JOINs.
+    on plain dicts produced by JOINs or views.
     """
     if isinstance(clause, Condition):
         return compare_values(row[clause.column], clause.operator, clause.value)
     if isinstance(clause, And):
         return _matches_dict(clause.left, row) and _matches_dict(clause.right, row)
     return _matches_dict(clause.left, row) or _matches_dict(clause.right, row)
-
-
-def _execute_create_table(stmt: CreateTableStatement, database: Database) -> ExecuteResult:
-    """Execute a CREATE TABLE statement."""
-    schema = Schema(columns=stmt.columns)
-    try:
-        database.create_table(stmt.table, schema)
-    except PyDBError as exc:
-        msg = f"CREATE TABLE failed: {exc}"
-        raise QueryError(msg) from exc
-    return _result_message(f"Table {stmt.table!r} created")
-
-
-def _execute_drop_table(stmt: DropTableStatement, database: Database) -> ExecuteResult:
-    """Execute a DROP TABLE statement."""
-    try:
-        database.drop_table(stmt.table)
-    except PyDBError as exc:
-        msg = f"DROP TABLE failed: {exc}"
-        raise QueryError(msg) from exc
-    return _result_message(f"Table {stmt.table!r} dropped")
-
-
-def _execute_insert(stmt: InsertStatement, database: Database) -> ExecuteResult:
-    """Execute an INSERT INTO statement."""
-    try:
-        table = database.get_table(stmt.table)
-    except PyDBError as exc:
-        msg = f"INSERT failed: {exc}"
-        raise QueryError(msg) from exc
-
-    # Build the column-value mapping.
-    if stmt.columns:
-        if len(stmt.columns) != len(stmt.values):
-            msg = (
-                f"Column count ({len(stmt.columns)}) doesn't match value count ({len(stmt.values)})"
-            )
-            raise QueryError(msg)
-        values = dict(zip(stmt.columns, stmt.values, strict=True))
-    else:
-        # No column list -- values must match schema column order.
-        schema_cols = table.schema.column_names
-        if len(schema_cols) != len(stmt.values):
-            msg = f"Expected {len(schema_cols)} values, got {len(stmt.values)}"
-            raise QueryError(msg)
-        values = dict(zip(schema_cols, stmt.values, strict=True))
-
-    try:
-        table.insert(values)
-    except PyDBError as exc:
-        msg = f"INSERT failed: {exc}"
-        raise QueryError(msg) from exc
-    return _result_message("1 row inserted")
-
-
-def _execute_update(stmt: UpdateStatement, database: Database) -> ExecuteResult:
-    """Execute an UPDATE statement."""
-    try:
-        table = database.get_table(stmt.table)
-    except PyDBError as exc:
-        msg = f"UPDATE failed: {exc}"
-        raise QueryError(msg) from exc
-
-    records = table.select(where=stmt.where.matches) if stmt.where is not None else table.select()
-
-    count = 0
-    for record in records:
-        try:
-            table.update(record_id=record.record_id, values=stmt.assignments)
-        except PyDBError as exc:
-            msg = f"UPDATE failed: {exc}"
-            raise QueryError(msg) from exc
-        count += 1
-
-    row_word = "row" if count == 1 else "rows"
-    return _result_message(f"{count} {row_word} updated")
-
-
-def _execute_delete(stmt: DeleteStatement, database: Database) -> ExecuteResult:
-    """Execute a DELETE FROM statement."""
-    try:
-        table = database.get_table(stmt.table)
-    except PyDBError as exc:
-        msg = f"DELETE failed: {exc}"
-        raise QueryError(msg) from exc
-
-    records = table.select(where=stmt.where.matches) if stmt.where is not None else table.select()
-
-    count = 0
-    for record in records:
-        table.delete(record_id=record.record_id)
-        count += 1
-
-    row_word = "row" if count == 1 else "rows"
-    return _result_message(f"{count} {row_word} deleted")
 
 
 def _validate_where_columns(clause: WhereClause, valid_columns: set[str]) -> None:
@@ -433,72 +446,10 @@ def _validate_where_columns(clause: WhereClause, valid_columns: set[str]) -> Non
         _validate_where_columns(clause.right, valid_columns)
 
 
-def _sort_records(records: list[Record], column: str, *, reverse: bool) -> list[Record]:
-    """Sort records by a column value."""
-
-    def sort_key(record: Record) -> Any:
-        return record[column]
-
-    return sorted(records, key=sort_key, reverse=reverse)
-
-
-def _project(
-    records: list[Record],
-    columns: list[str],
-    all_columns: list[str],
-) -> list[dict[str, Value]]:
-    """Extract only the requested columns from each record."""
-    if not columns:
-        target_cols = all_columns
-    else:
-        all_set = set(all_columns)
-        for col in columns:
-            if col not in all_set:
-                msg = f"Unknown column {col!r} in SELECT"
-                raise QueryError(msg)
-        target_cols = columns
-
-    return [{col: record[col] for col in target_cols} for record in records]
-
-
-def _execute_create_index(stmt: CreateIndexStatement, database: Database) -> ExecuteResult:
-    """Execute a CREATE INDEX statement."""
-    try:
-        table = database.get_table(stmt.table)
-        table.create_index(stmt.index_name, stmt.column)
-    except PyDBError as exc:
-        msg = f"CREATE INDEX failed: {exc}"
-        raise QueryError(msg) from exc
-    return _result_message(f"Index {stmt.index_name!r} created on {stmt.table}({stmt.column})")
-
-
-def _execute_drop_index(stmt: DropIndexStatement, database: Database) -> ExecuteResult:
-    """Execute a DROP INDEX statement."""
-    try:
-        table = database.get_table(stmt.table)
-        table.drop_index(stmt.index_name)
-    except PyDBError as exc:
-        msg = f"DROP INDEX failed: {exc}"
-        raise QueryError(msg) from exc
-    return _result_message(f"Index {stmt.index_name!r} dropped")
-
-
-def _execute_explain(stmt: ExplainStatement, database: Database) -> ExecuteResult:
-    """Execute an EXPLAIN statement -- show the query plan."""
-    try:
-        table = database.get_table(stmt.query.table)
-    except PyDBError as exc:
-        msg = f"EXPLAIN failed: {exc}"
-        raise QueryError(msg) from exc
-
-    plan = plan_query(stmt.query, table)
-    return [{"plan": plan.strategy}]
-
-
 def _resolve_subqueries(clause: WhereClause, database: Database) -> WhereClause:
     """Recursively resolve any Subquery values in a WHERE clause.
 
-    Runs each subquery against the database and replaces the Subquery
+    Run each subquery against the database and replace the Subquery
     object with the actual result value(s).
     """
     if isinstance(clause, Condition):
@@ -529,46 +480,158 @@ def _resolve_subqueries(clause: WhereClause, database: Database) -> WhereClause:
     )
 
 
+# ---------------------------------------------------------------------------
+# Record helpers
+# ---------------------------------------------------------------------------
+
+
+def _sort_records(records: list[Record], column: str, *, reverse: bool) -> list[Record]:
+    """Sort records by a column value."""
+
+    def sort_key(record: Record) -> Any:
+        return record[column]
+
+    return sorted(records, key=sort_key, reverse=reverse)
+
+
+def _project(
+    records: list[Record],
+    columns: list[str],
+    all_columns: list[str],
+) -> list[dict[str, Value]]:
+    """Extract only the requested columns from each record.
+
+    Like using a ruler to cover columns you don't need on a spreadsheet --
+    you only see the ones you asked for.
+    """
+    if not columns:
+        target_cols = all_columns
+    else:
+        all_set = set(all_columns)
+        for col in columns:
+            if col not in all_set:
+                msg = f"Unknown column {col!r} in SELECT"
+                raise QueryError(msg)
+        target_cols = columns
+
+    return [{col: record[col] for col in target_cols} for record in records]
+
+
+# ---------------------------------------------------------------------------
+# DML statement handlers (CREATE, DROP, INSERT, UPDATE, DELETE)
+# ---------------------------------------------------------------------------
+
+
+def _execute_create_table(stmt: CreateTableStatement, database: Database) -> ExecuteResult:
+    """Execute a CREATE TABLE statement."""
+    schema = Schema(columns=stmt.columns)
+    _wrap_error("CREATE TABLE", database.create_table, stmt.table, schema)
+    return _result_message(f"Table {stmt.table!r} created")
+
+
+def _execute_drop_table(stmt: DropTableStatement, database: Database) -> ExecuteResult:
+    """Execute a DROP TABLE statement."""
+    _wrap_error("DROP TABLE", database.drop_table, stmt.table)
+    return _result_message(f"Table {stmt.table!r} dropped")
+
+
+def _execute_insert(stmt: InsertStatement, database: Database) -> ExecuteResult:
+    """Execute an INSERT INTO statement."""
+    table = _get_table(database, stmt.table, "INSERT")
+
+    # Build the column-value mapping.
+    if stmt.columns:
+        if len(stmt.columns) != len(stmt.values):
+            msg = (
+                f"Column count ({len(stmt.columns)}) doesn't match value count ({len(stmt.values)})"
+            )
+            raise QueryError(msg)
+        values = dict(zip(stmt.columns, stmt.values, strict=True))
+    else:
+        # No column list -- values must match schema column order.
+        schema_cols = table.schema.column_names
+        if len(schema_cols) != len(stmt.values):
+            msg = f"Expected {len(schema_cols)} values, got {len(stmt.values)}"
+            raise QueryError(msg)
+        values = dict(zip(schema_cols, stmt.values, strict=True))
+
+    _wrap_error("INSERT", table.insert, values)
+    return _result_message("1 row inserted")
+
+
+def _execute_update(stmt: UpdateStatement, database: Database) -> ExecuteResult:
+    """Execute an UPDATE statement."""
+    table = _get_table(database, stmt.table, "UPDATE")
+
+    records = table.select(where=stmt.where.matches) if stmt.where is not None else table.select()
+
+    count = 0
+    for record in records:
+        _wrap_error("UPDATE", table.update, record_id=record.record_id, values=stmt.assignments)
+        count += 1
+
+    row_word = "row" if count == 1 else "rows"
+    return _result_message(f"{count} {row_word} updated")
+
+
+def _execute_delete(stmt: DeleteStatement, database: Database) -> ExecuteResult:
+    """Execute a DELETE FROM statement."""
+    table = _get_table(database, stmt.table, "DELETE")
+
+    records = table.select(where=stmt.where.matches) if stmt.where is not None else table.select()
+
+    count = 0
+    for record in records:
+        table.delete(record_id=record.record_id)
+        count += 1
+
+    row_word = "row" if count == 1 else "rows"
+    return _result_message(f"{count} {row_word} deleted")
+
+
+# ---------------------------------------------------------------------------
+# Index handlers
+# ---------------------------------------------------------------------------
+
+
+def _execute_create_index(stmt: CreateIndexStatement, database: Database) -> ExecuteResult:
+    """Execute a CREATE INDEX statement."""
+    table = _get_table(database, stmt.table, "CREATE INDEX")
+    _wrap_error("CREATE INDEX", table.create_index, stmt.index_name, stmt.column)
+    return _result_message(f"Index {stmt.index_name!r} created on {stmt.table}({stmt.column})")
+
+
+def _execute_drop_index(stmt: DropIndexStatement, database: Database) -> ExecuteResult:
+    """Execute a DROP INDEX statement."""
+    table = _get_table(database, stmt.table, "DROP INDEX")
+    _wrap_error("DROP INDEX", table.drop_index, stmt.index_name)
+    return _result_message(f"Index {stmt.index_name!r} dropped")
+
+
+# ---------------------------------------------------------------------------
+# EXPLAIN handler
+# ---------------------------------------------------------------------------
+
+
+def _execute_explain(stmt: ExplainStatement, database: Database) -> ExecuteResult:
+    """Execute an EXPLAIN statement -- show the query plan."""
+    table = _get_table(database, stmt.query.table, "EXPLAIN")
+    plan = plan_query(stmt.query, table)
+    return [{"plan": plan.strategy}]
+
+
+# ---------------------------------------------------------------------------
+# View handlers
+# ---------------------------------------------------------------------------
+
+
 def _execute_create_view(stmt: CreateViewStatement, database: Database) -> ExecuteResult:
     """Execute a CREATE VIEW statement."""
-    try:
-        database.create_view(stmt.name, stmt.query)
-    except PyDBError as exc:
-        msg = f"CREATE VIEW failed: {exc}"
-        raise QueryError(msg) from exc
+    _wrap_error("CREATE VIEW", database.create_view, stmt.name, stmt.query)
     return _result_message(f"View {stmt.name!r} created")
 
 
 def _execute_drop_view(stmt: DropViewStatement, database: Database) -> ExecuteResult:
     """Execute a DROP VIEW statement."""
-    try:
-        database.drop_view(stmt.name)
-    except PyDBError as exc:
-        msg = f"DROP VIEW failed: {exc}"
-        raise QueryError(msg) from exc
+    _wrap_error("DROP VIEW", database.drop_view, stmt.name)
     return _result_message(f"View {stmt.name!r} dropped")
-
-
-def _apply_outer_clauses(rows: ExecuteResult, query: Query) -> ExecuteResult:
-    """Apply WHERE, ORDER BY, LIMIT, and column projection from an outer query to view results."""
-    result = rows
-
-    # Filter.
-    if query.where is not None:
-        result = [row for row in result if _matches_dict(query.where, row)]
-
-    # Sort.
-    if query.order_by is not None:
-        col = query.order_by.column
-        reverse = query.order_by.direction == SortDirection.DESC
-        result = sorted(result, key=lambda r: r[col], reverse=reverse)  # type: ignore[return-value]
-
-    # Limit.
-    if query.limit is not None:
-        result = result[: query.limit]
-
-    # Project columns.
-    if query.columns:
-        result = [{c: row[c] for c in query.columns} for row in result]
-
-    return result
