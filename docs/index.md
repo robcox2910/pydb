@@ -50,6 +50,7 @@ starting with the simplest possible thing: a **record**.
 | **Query Engine** | Asking the librarian | Understands requests like "find all rare cards" |
 | **SQL Parser** | Translating English to librarian-speak | Turns SQL text into instructions the engine understands |
 | **Transactions** | The "no take-backs" rule | Groups of changes that either all happen or none do |
+| **Outbox** | All-or-nothing shopping | Atomic DB + MQ operations |
 
 ## Let's Start!
 

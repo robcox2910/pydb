@@ -22,6 +22,7 @@ with real-world analogies a 12-year-old can follow.
 - **Write-Ahead Log** -- crash recovery via operation logging
 - **MVCC** -- multi-version concurrency for snapshot isolation
 - **CSV import/export** -- load and save data from spreadsheet files
+- **Outbox pattern** -- atomic DB writes + message queue delivery
 - **Interactive REPL** -- type SQL and see pretty-printed results
 
 ## Example
@@ -77,6 +78,10 @@ computing stack is built from scratch:
 | [PyStack](https://github.com/robcox2910/pystack) | Full-stack integration |
 | [PyWeb](https://github.com/robcox2910/pyweb) | HTTP web servers |
 | [PyGit](https://github.com/robcox2910/pygit) | Version control |
+| [PyCrypt](https://github.com/robcox2910/pycrypt) | Cryptography |
+| [PyNet](https://github.com/robcox2910/pynet) | Networking |
+| [PySearch](https://github.com/robcox2910/pysearch) | Full-text search |
+| [PyMQ](https://github.com/robcox2910/pymq) | Message queues |
 
 All projects use TDD, comprehensive documentation with real-world
 analogies, and are designed for learners aged 12+.
