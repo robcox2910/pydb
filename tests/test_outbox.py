@@ -191,6 +191,32 @@ class TestOutboxRelay:
 
         assert call_count == ONE_MESSAGE
 
+    def test_relay_handles_single_quote_in_body(self, tmp_path: Path) -> None:
+        """A message body with a single quote is relayed and marked sent.
+
+        Regression test: the old f-string SQL broke on values like
+        "O'Brien", so the message was never marked sent and got
+        redelivered forever.
+        """
+        db = _make_db(tmp_path)
+        outbox = Outbox(db)
+        delivered: list[tuple[str, str]] = []
+
+        outbox.execute(
+            sql="UPDATE accounts SET balance = 90 WHERE name = 'Alice'",
+            message={"queue": "receipts", "body": "O'Brien paid $10"},
+        )
+
+        count = outbox.relay(lambda queue, body: delivered.append((queue, body)))
+        assert count == ONE_MESSAGE
+        assert delivered == [("receipts", "O'Brien paid $10")]
+
+        # It must not be redelivered, and it must be counted as sent.
+        second = outbox.relay(lambda queue, body: delivered.append((queue, body)))
+        assert second == ZERO_MESSAGES
+        assert outbox.sent_count() == ONE_MESSAGE
+        assert outbox.pending_messages() == []
+
     def test_relay_skips_failed_delivery(self, tmp_path: Path) -> None:
         """If put_fn raises, the message stays pending for retry."""
         db = _make_db(tmp_path)

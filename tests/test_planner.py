@@ -11,10 +11,13 @@ import pytest
 
 from pydb.database import Database
 from pydb.executor import QueryError, execute
+from pydb.index import Index
 from pydb.planner import QueryPlan, plan_query
 from pydb.query import Condition, Operator, Query
+from pydb.record import Record, Value
 from pydb.sql_parser import parse_sql
 from pydb.statements import CreateIndexStatement, DropIndexStatement, ExplainStatement
+from pydb.table import Table
 
 # Named constants.
 ONE_ROW = 1
@@ -194,6 +197,70 @@ class TestIndexMaintenance:
         execute(parse_sql("CREATE INDEX idx_name ON cards (name)"), db)
         with_idx = execute(parse_sql("SELECT * FROM cards WHERE name = 'Pikachu'"), db)
         assert without_idx == with_idx
+
+
+class TestIndexUsedInExecution:
+    """Verify equality queries actually use the index when executed."""
+
+    def test_equality_query_uses_index(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`col = value` on an indexed column goes through select_by_index."""
+        db = _make_db(tmp_path)
+        execute(parse_sql("CREATE INDEX idx_name ON cards (name)"), db)
+
+        calls: list[Value] = []
+        original = Table.select_by_index
+
+        def spy(self: Table, index: Index, key: Value) -> list[Record]:
+            calls.append(key)
+            return original(self, index, key)
+
+        monkeypatch.setattr(Table, "select_by_index", spy)
+
+        rows = execute(parse_sql("SELECT * FROM cards WHERE name = 'Pikachu'"), db)
+        assert calls == ["Pikachu"]
+        assert len(rows) == ONE_ROW
+        assert rows[0]["name"] == "Pikachu"
+
+    def test_query_without_index_does_full_scan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without an index, execution never calls select_by_index."""
+        db = _make_db(tmp_path)
+
+        calls: list[Value] = []
+        original = Table.select_by_index
+
+        def spy(self: Table, index: Index, key: Value) -> list[Record]:
+            calls.append(key)
+            return original(self, index, key)
+
+        monkeypatch.setattr(Table, "select_by_index", spy)
+
+        rows = execute(parse_sql("SELECT * FROM cards WHERE name = 'Pikachu'"), db)
+        assert calls == []
+        assert len(rows) == ONE_ROW
+
+    def test_non_equality_query_does_not_use_index(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `>` query does not use the index even when one exists."""
+        db = _make_db(tmp_path)
+        execute(parse_sql("CREATE INDEX idx_power ON cards (power)"), db)
+
+        calls: list[Value] = []
+        original = Table.select_by_index
+
+        def spy(self: Table, index: Index, key: Value) -> list[Record]:
+            calls.append(key)
+            return original(self, index, key)
+
+        monkeypatch.setattr(Table, "select_by_index", spy)
+
+        rows = execute(parse_sql("SELECT * FROM cards WHERE power > 50"), db)
+        assert calls == []
+        assert len(rows) == TWO_ROWS
 
 
 class TestQueryPlanModel:

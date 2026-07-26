@@ -162,6 +162,12 @@ def _read_string(sql: str, start: int, length: int) -> tuple[int, str]:
     chars: list[str] = []
     while i < length:
         if sql[i] == "'":
+            # Two single quotes in a row escape a literal quote, so
+            # 'it''s' means the text "it's" -- just like SQL.
+            if i + 1 < length and sql[i + 1] == "'":
+                chars.append("'")
+                i += 2
+                continue
             return i + 1, "".join(chars)
         chars.append(sql[i])
         i += 1

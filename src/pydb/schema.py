@@ -65,6 +65,33 @@ class Schema:
         """Return the column names in order."""
         return [col.name for col in self._columns]
 
+    def coerce(self, values: Mapping[str, Value]) -> dict[str, Value]:
+        """Adjust values to fit their column types where it's safe.
+
+        Like a helpful clerk who writes "5.0" when a form asks for a
+        decimal but you only wrote "5" -- a whole number is a perfectly
+        good decimal, so we widen an ``int`` to a ``float`` for FLOAT
+        columns. Everything else is passed through unchanged.
+
+        Args:
+            values: Column-name-to-value mapping to adjust.
+
+        Returns:
+            A new mapping with ints widened to floats for FLOAT columns.
+
+        """
+        result = dict(values)
+        for name, value in result.items():
+            expected = self._column_map.get(name)
+            # bool is a subclass of int, so exclude it explicitly.
+            if (
+                expected == DataType.FLOAT
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+            ):
+                result[name] = float(value)
+        return result
+
     def validate(self, values: Mapping[str, Value]) -> None:
         """Check that a set of values conforms to this schema.
 

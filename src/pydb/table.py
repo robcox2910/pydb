@@ -167,6 +167,7 @@ class Table:
             SchemaError: If the values don't conform to the table's schema.
 
         """
+        values = self._schema.coerce(values)
         self._schema.validate(values)
         self._check_constraints(values)
         record_id = self._next_id
@@ -254,6 +255,7 @@ class Table:
 
         """
         record = self.get(record_id)
+        values = self._schema.coerce(values)
         # Build the full set of values for validation.
         merged = record.data
         merged.update(values)

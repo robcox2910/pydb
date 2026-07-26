@@ -14,6 +14,8 @@ EXPECTED_COLUMN_COUNT = 3
 TWO_COLUMNS = 2
 POWER_55 = 55
 PI = 3.14
+FIVE_INT = 5
+FIVE_FLOAT = 5.0
 
 
 class TestSchemaCreation:
@@ -146,3 +148,37 @@ class TestSchemaRepr:
         result = repr(schema)
         assert "name:TEXT" in result
         assert "power:INTEGER" in result
+
+
+class TestFloatCoercion:
+    """Verify int -> float widening for FLOAT columns."""
+
+    def test_int_widened_to_float(self) -> None:
+        """A whole number for a FLOAT column becomes a float."""
+        schema = Schema(columns=[Column(name="ratio", data_type=DataType.FLOAT)])
+        coerced = schema.coerce({"ratio": FIVE_INT})
+        assert coerced["ratio"] == FIVE_FLOAT
+        assert isinstance(coerced["ratio"], float)
+        # A coerced int should now pass validation for a FLOAT column.
+        schema.validate(coerced)
+
+    def test_float_left_unchanged(self) -> None:
+        """An existing float is passed through untouched."""
+        schema = Schema(columns=[Column(name="ratio", data_type=DataType.FLOAT)])
+        coerced = schema.coerce({"ratio": PI})
+        assert coerced["ratio"] == PI
+
+    def test_bool_not_widened_for_float_column(self) -> None:
+        """A bool is not silently turned into a float (it is still rejected)."""
+        schema = Schema(columns=[Column(name="ratio", data_type=DataType.FLOAT)])
+        coerced = schema.coerce({"ratio": True})
+        assert coerced["ratio"] is True
+        with pytest.raises(SchemaError):
+            schema.validate(coerced)
+
+    def test_int_column_not_affected(self) -> None:
+        """Ints for INTEGER columns are left as ints."""
+        schema = Schema(columns=[Column(name="power", data_type=DataType.INTEGER)])
+        coerced = schema.coerce({"power": POWER_55})
+        assert coerced["power"] == POWER_55
+        assert not isinstance(coerced["power"], float)

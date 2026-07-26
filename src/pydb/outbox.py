@@ -169,16 +169,16 @@ class Outbox:
             A list of OutboxMessage objects waiting to be relayed.
 
         """
-        sql = f"SELECT * FROM {OUTBOX_TABLE} WHERE status = '{STATUS_PENDING}'"
-        results = execute(parse_sql(sql), self._database)
+        table = self._database.get_table(OUTBOX_TABLE)
+        pending = table.select(where=lambda record: record["status"] == STATUS_PENDING)
         return [
             OutboxMessage(
-                queue=str(row["queue"]),
-                body=str(row["body"]),
-                status=str(row["status"]),
-                created_at=str(row["created_at"]),
+                queue=str(record["queue"]),
+                body=str(record["body"]),
+                status=str(record["status"]),
+                created_at=str(record["created_at"]),
             )
-            for row in results
+            for record in pending
         ]
 
     def relay(self, put_fn: Callable[[str, str], None]) -> int:
@@ -188,6 +188,11 @@ class Outbox:
         them as sent. Safe to call multiple times (idempotent -- sent
         messages are skipped).
 
+        We update rows through the table API by record ID rather than by
+        building a SQL string. That means a message body containing a
+        single quote (like "O'Brien") is handled safely instead of
+        breaking the follow-up update and being redelivered forever.
+
         Args:
             put_fn: A callable that takes (queue_name, message_body)
                     and delivers the message.
@@ -196,27 +201,22 @@ class Outbox:
             The number of messages relayed.
 
         """
-        pending = self.pending_messages()
+        table = self._database.get_table(OUTBOX_TABLE)
+        pending = table.select(where=lambda record: record["status"] == STATUS_PENDING)
         count = 0
 
-        for msg in pending:
+        for record in pending:
             try:
-                put_fn(msg.queue, msg.body)
-                # Mark as sent.
-                update_sql = (
-                    f"UPDATE {OUTBOX_TABLE} SET status = '{STATUS_SENT}' "
-                    f"WHERE queue = '{msg.queue}' AND body = '{msg.body}' "
-                    f"AND status = '{STATUS_PENDING}'"
-                )
-                execute(parse_sql(update_sql), self._database)
-                count += 1
+                put_fn(str(record["queue"]), str(record["body"]))
             except Exception:  # noqa: BLE001, S112
-                continue  # Skip failed messages, try next.
+                continue  # Skip failed deliveries; retry on the next relay.
+            # Mark as sent by record ID -- no SQL string to break.
+            table.update(record_id=record.record_id, values={"status": STATUS_SENT})
+            count += 1
 
         return count
 
     def sent_count(self) -> int:
         """Return the number of messages that have been successfully sent."""
-        count_sql = f"SELECT COUNT(*) FROM {OUTBOX_TABLE} WHERE status = '{STATUS_SENT}'"
-        results = execute(parse_sql(count_sql), self._database)
-        return int(results[0]["COUNT(*)"])
+        table = self._database.get_table(OUTBOX_TABLE)
+        return len(table.select(where=lambda record: record["status"] == STATUS_SENT))
