@@ -128,7 +128,7 @@ def repl(database: Database) -> None:
     while True:
         try:
             line = input(PROMPT).strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError, KeyboardInterrupt:
             _write("\nGoodbye!")
             break
 
