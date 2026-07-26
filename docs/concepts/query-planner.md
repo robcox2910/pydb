@@ -81,4 +81,4 @@ faster**.
 ## Next Up
 
 Head to [Constraints](constraints.md) to learn about PRIMARY KEY,
-NOT NULL, UNIQUE, and FOREIGN KEY -- rules that keep your data honest.
+NOT NULL, and UNIQUE -- rules that keep your data honest.

@@ -39,15 +39,35 @@ CREATE TABLE players (
     score INTEGER
 )
 
--- This works:
+-- This works: every column has a value.
 INSERT INTO players (name, score) VALUES ('Alice', 100)
-
--- This fails:
-INSERT INTO players (name) VALUES (NULL)  -- name is NOT NULL!
 ```
 
 Think of it like a form where certain fields are marked with a red
 asterisk (*) -- you must fill them in.
+
+### An honest note about NULL
+
+Real databases let a column hold **NULL** -- a special "no value here"
+marker -- and NOT NULL is the rule that forbids it. **PyDB has no NULL
+yet.** Every column always needs a value, so this:
+
+```sql
+-- This fails in PyDB: 'score' is missing.
+INSERT INTO players (name) VALUES ('Alice')
+-- Error: Missing required column(s): score
+```
+
+is rejected whether or not the column is NOT NULL. In other words,
+right now *every* column behaves as if it were required. The `NOT NULL`
+keyword is parsed and remembered, but because nothing can ever be NULL,
+it has no extra work to do.
+
+> **Try it yourself!** Adding real NULL support is a great exercise:
+> teach the tokenizer/parser a `NULL` literal, let a value be `None`,
+> allow the schema to skip missing optional columns, and *then* NOT NULL
+> becomes the rule that stops NULLs sneaking in. See if you can wire it
+> all the way through.
 
 ## UNIQUE
 
@@ -67,10 +87,9 @@ INSERT INTO users VALUES ('alice@example.com', 'Bob')    -- FAILS! Email taken.
 ## What We Test
 
 - PRIMARY KEY rejects duplicate values.
-- PRIMARY KEY rejects NULL values.
-- NOT NULL rejects missing values.
-- UNIQUE rejects duplicate values.
-- UNIQUE allows NULL values (unless also NOT NULL).
+- UNIQUE rejects duplicate values (on INSERT and UPDATE).
+- Updating a row without changing its unique value is allowed.
+- Every column requires a value (PyDB has no NULL yet).
 - Constraints are parsed correctly in CREATE TABLE.
 - Clear error messages explain which constraint was violated.
 

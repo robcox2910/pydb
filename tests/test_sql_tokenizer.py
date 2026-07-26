@@ -99,6 +99,16 @@ class TestStrings:
         with pytest.raises(TokenizerError, match="Unterminated"):
             tokenize("'hello")
 
+    def test_escaped_quote(self) -> None:
+        """Two single quotes in a row mean one literal quote."""
+        tokens = tokenize("'it''s'")
+        assert tokens[0] == Token(TokenType.STRING, "it's")
+
+    def test_escaped_quote_at_end(self) -> None:
+        """A trailing escaped quote is kept and the string still closes."""
+        tokens = tokenize("'O''Brien'")
+        assert tokens[0] == Token(TokenType.STRING, "O'Brien")
+
 
 class TestOperators:
     """Verify operator tokenization."""

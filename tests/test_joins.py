@@ -166,6 +166,49 @@ class TestExecuteJoin:
             )
 
 
+class TestJoinAggregates:
+    """Verify aggregate functions are applied after a JOIN."""
+
+    def test_join_count(self, tmp_path: Path) -> None:
+        """COUNT(*) over a JOIN counts the combined rows, not raw rows."""
+        db = _make_db(tmp_path)
+        rows = execute(
+            parse_sql(
+                "SELECT COUNT(*) FROM pokemon JOIN trainers ON pokemon.trainer = trainers.name"
+            ),
+            db,
+        )
+        assert len(rows) == ONE_ROW
+        assert rows[0]["COUNT(*)"] == THREE_ROWS
+
+    def test_join_count_with_where(self, tmp_path: Path) -> None:
+        """WHERE filters the joined rows before the aggregate runs."""
+        db = _make_db(tmp_path)
+        rows = execute(
+            parse_sql(
+                "SELECT COUNT(*) FROM pokemon "
+                "JOIN trainers ON pokemon.trainer = trainers.name "
+                "WHERE pokemon.type = 'Electric'"
+            ),
+            db,
+        )
+        assert rows[0]["COUNT(*)"] == ONE_ROW
+
+    def test_join_group_by(self, tmp_path: Path) -> None:
+        """GROUP BY on a qualified column groups the joined rows."""
+        db = _make_db(tmp_path)
+        rows = execute(
+            parse_sql(
+                "SELECT trainers.town, COUNT(*) FROM pokemon "
+                "JOIN trainers ON pokemon.trainer = trainers.name "
+                "GROUP BY trainers.town ORDER BY trainers.town"
+            ),
+            db,
+        )
+        counts = {str(r["trainers.town"]): r["COUNT(*)"] for r in rows}
+        assert counts == {"Cerulean": ONE_ROW, "Pallet": TWO_ROWS}
+
+
 class TestJoinClauseModel:
     """Verify the JoinClause dataclass."""
 

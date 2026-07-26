@@ -29,6 +29,8 @@ POWER_60 = 60
 TWO_ROWS = 2
 THREE_ROWS = 3
 ALICE_SCORE = 250
+FIVE_FLOAT = 5.0
+SEVEN_FLOAT = 7.0
 
 
 class TestParseCreateTable:
@@ -313,3 +315,26 @@ class TestEndToEnd:
 
         execute(parse_sql("DROP TABLE scores"), db)
         assert "scores" not in db.table_names()
+
+
+class TestFloatColumnAcceptsInteger:
+    """Verify FLOAT columns accept whole-number literals."""
+
+    def test_insert_integer_into_float_column(self, tmp_path: Path) -> None:
+        """INSERT of an integer into a FLOAT column stores it as a float."""
+        db = Database(path=tmp_path)
+        execute(parse_sql("CREATE TABLE measures (label TEXT, ratio FLOAT)"), db)
+        execute(parse_sql("INSERT INTO measures VALUES ('half', 5)"), db)
+        rows = execute(parse_sql("SELECT ratio FROM measures"), db)
+        assert rows[0]["ratio"] == FIVE_FLOAT
+        assert isinstance(rows[0]["ratio"], float)
+
+    def test_update_integer_into_float_column(self, tmp_path: Path) -> None:
+        """UPDATE of a FLOAT column with an integer stores it as a float."""
+        db = Database(path=tmp_path)
+        execute(parse_sql("CREATE TABLE measures (label TEXT, ratio FLOAT)"), db)
+        execute(parse_sql("INSERT INTO measures VALUES ('half', 0.5)"), db)
+        execute(parse_sql("UPDATE measures SET ratio = 7 WHERE label = 'half'"), db)
+        rows = execute(parse_sql("SELECT ratio FROM measures"), db)
+        assert rows[0]["ratio"] == SEVEN_FLOAT
+        assert isinstance(rows[0]["ratio"], float)

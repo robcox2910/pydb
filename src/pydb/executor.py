@@ -16,7 +16,8 @@ the requested operation:
 - DELETE: remove matching records
 """
 
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, Protocol
 
 from pydb.database import Database
 from pydb.errors import PyDBError
@@ -58,6 +59,20 @@ class QueryError(PyDBError):
 
 # The result of executing any SQL statement.
 ExecuteResult = list[dict[str, Value]]
+
+
+class _RowLike(Protocol):
+    """Anything that answers ``row[column_name]`` with a value.
+
+    Both ``Record`` objects (from a single table) and plain dicts (from
+    JOINs or views) fit this shape, so the aggregate helpers can work on
+    either without caring which one they were handed.
+    """
+
+    def __getitem__(self, key: str, /) -> Value:
+        """Return the value stored under *key*."""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers -- small tools every handler can borrow
@@ -172,6 +187,18 @@ def _apply_post_processing(rows: ExecuteResult, query: Query) -> ExecuteResult:
     return _apply_column_projection(result, query)
 
 
+def _finalize_dict_rows(rows: ExecuteResult, query: Query) -> ExecuteResult:
+    """Finish a query whose rows are plain dicts (from a JOIN or a view).
+
+    If the query asks for aggregates (like ``COUNT(*)``), we filter with
+    WHERE first and then summarise. Otherwise we run the ordinary
+    WHERE -> ORDER BY -> LIMIT -> PROJECT pipeline.
+    """
+    if query.aggregates:
+        return _execute_aggregate(query, _apply_where_on_dicts(rows, query))
+    return _apply_post_processing(rows, query)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -231,7 +258,7 @@ def _execute_select(query: Query, database: Database) -> ExecuteResult:
     if view_query is not None:
         # Run the view's stored query, then apply outer clauses.
         view_results = execute(view_query, database)
-        return _apply_post_processing(view_results, query)
+        return _finalize_dict_rows(view_results, query)
 
     left_table = _get_table(database, query.table, "Query")
 
@@ -251,7 +278,7 @@ def _execute_simple_select(query: Query, table: Table, database: Database) -> Ex
         # Resolve any subqueries in the WHERE clause before filtering.
         where = _resolve_subqueries(where, database)
         _validate_where_columns(where, valid_cols)
-        records = table.select(where=where.matches)
+        records = _select_records(table, where)
     else:
         records = table.select()
 
@@ -273,13 +300,36 @@ def _execute_simple_select(query: Query, table: Table, database: Database) -> Ex
     return _project(records, query.columns, table.schema.column_names)
 
 
-def _execute_aggregate(query: Query, records: list[Record]) -> ExecuteResult:
+def _select_records(table: Table, where: WhereClause) -> list[Record]:
+    """Fetch matching records, using an index when the WHERE clause allows it.
+
+    This is where the query planner's promise comes true: if the WHERE
+    clause is a simple ``column = value`` test and that column has an
+    index, we jump straight to the matching records (like using the card
+    catalog) instead of walking every row (a full table scan).
+    """
+    if (
+        isinstance(where, Condition)
+        and where.operator == Operator.EQ
+        and not isinstance(where.value, (Subquery, list))
+    ):
+        index = table.get_index_for_column(where.column)
+        if index is not None:
+            matches = table.select_by_index(index, where.value)
+            # Preserve insertion (record-ID) order so results are
+            # identical to a full scan.
+            return sorted(matches, key=lambda record: record.record_id)
+
+    return table.select(where=where.matches)
+
+
+def _execute_aggregate(query: Query, records: Sequence[_RowLike]) -> ExecuteResult:
     """Execute a query with aggregate functions and optional GROUP BY.
 
     Aggregates are like summary stats: instead of showing every row,
     you get a single answer (like COUNT or SUM) for each group.
     """
-    groups = _group_records(records, query.group_by) if query.group_by else {(): records}
+    groups = _group_records(records, query.group_by) if query.group_by else {(): list(records)}
 
     result: ExecuteResult = []
     for group_records in groups.values():
@@ -314,8 +364,8 @@ def _execute_aggregate(query: Query, records: list[Record]) -> ExecuteResult:
 
 
 def _group_records(
-    records: list[Record], group_by: list[str]
-) -> dict[tuple[Value, ...], list[Record]]:
+    records: Sequence[_RowLike], group_by: list[str]
+) -> dict[tuple[Value, ...], list[_RowLike]]:
     """Group records by the values of the GROUP BY columns.
 
     Like sorting trading cards into piles by team -- each pile is a group.
@@ -324,14 +374,14 @@ def _group_records(
         A dict mapping group keys to lists of records.
 
     """
-    groups: dict[tuple[Value, ...], list[Record]] = {}
+    groups: dict[tuple[Value, ...], list[_RowLike]] = {}
     for record in records:
         key = tuple(record[col] for col in group_by)
         groups.setdefault(key, []).append(record)
     return groups
 
 
-def _compute_aggregate(agg: AggregateColumn, records: list[Record]) -> Value:
+def _compute_aggregate(agg: AggregateColumn, records: Sequence[_RowLike]) -> Value:
     """Compute a single aggregate function over a group of records."""
     match agg.function:
         case AggFunc.COUNT:
@@ -388,8 +438,8 @@ def _execute_select_with_join(
                     row[f"{right_name}.{col}"] = right_rec[col]
                 combined.append(row)
 
-    # Apply WHERE, ORDER BY, LIMIT, and column projection.
-    return _apply_post_processing(combined, query)
+    # Apply WHERE, aggregates (if any), ORDER BY, LIMIT, and projection.
+    return _finalize_dict_rows(combined, query)
 
 
 def _resolve_column(qualified: str, left_table: str, right_table: str) -> str:

@@ -106,6 +106,17 @@ class TestExecuteViews:
         with pytest.raises(QueryError, match="DROP VIEW failed"):
             execute(parse_sql("DROP VIEW missing"), db)
 
+    def test_aggregate_over_view(self, tmp_path: Path) -> None:
+        """An aggregate on a view summarises the view's rows."""
+        db = _make_db(tmp_path)
+        execute(
+            parse_sql("CREATE VIEW strong AS SELECT name, power FROM cards WHERE power > 50"),
+            db,
+        )
+        rows = execute(parse_sql("SELECT COUNT(*) FROM strong"), db)
+        assert len(rows) == ONE_ROW
+        assert rows[0]["COUNT(*)"] == THREE_ROWS
+
     def test_view_names_listed(self, tmp_path: Path) -> None:
         """View names should be accessible from the database."""
         db = _make_db(tmp_path)
