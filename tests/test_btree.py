@@ -5,6 +5,10 @@ balanced so you can find any card in just a few steps. These tests verify
 that the cabinet works correctly even as cards are added and removed.
 """
 
+import random
+
+import pytest
+
 from pydb.btree import BTree, BTreeNode
 
 # Named constants.
@@ -21,6 +25,7 @@ RECORD_8 = 8
 RECORD_9 = 9
 RECORD_10 = 10
 EXPECTED_CHILDREN = 2
+INSERT_CHANCE = 0.55  # a bit more inserting than deleting, so the tree grows
 
 
 class TestBTreeCreation:
@@ -282,3 +287,109 @@ class TestBTreeAllKeys:
         for i, name in enumerate(["Zoe", "Ada", "Max"], start=1):
             tree.insert(name, i)
         assert tree.all_keys() == ["Ada", "Max", "Zoe"]
+
+
+def _check_invariants(tree: BTree) -> None:
+    """Assert every B-Tree rule holds, from the root down to the leaves.
+
+    A healthy filing cabinet: every drawer's cards are sorted, every label
+    drawer has exactly one more pointer than cards, no drawer is over-full
+    or (apart from the top one) too empty, and every bottom drawer sits at
+    the same depth.
+    """
+    max_keys = tree.order - 1
+    min_keys = (tree.order + 1) // 2 - 1
+    leaf_depths: set[int] = set()
+
+    def walk(node: BTreeNode, depth: int, *, is_root: bool) -> None:
+        assert node.keys == sorted(node.keys)
+        assert len(node.keys) == len(set(node.keys))
+        assert len(node.values) == len(node.keys)
+        assert all(node.values), "every stored key keeps at least one record"
+        assert len(node.keys) <= max_keys
+        if not is_root:
+            assert len(node.keys) >= min_keys
+        if node.leaf:
+            assert node.children == []
+            leaf_depths.add(depth)
+            return
+        assert len(node.children) == len(node.keys) + 1
+        for child in node.children:
+            walk(child, depth + 1, is_root=False)
+
+    walk(tree.root, 0, is_root=True)
+    assert len(leaf_depths) <= 1, "all leaves must be at the same depth"
+    keys = tree.all_keys()
+    assert keys == sorted(keys)
+
+
+class TestBTreeStaysHealthy:
+    """Random inserts and deletes never break the tree (checked against a dict)."""
+
+    def test_split_never_leaves_an_empty_drawer(self) -> None:
+        """Splitting a full node with an odd order keeps both halves non-empty."""
+        tree = BTree(order=ORDER_3)
+        for key in range(10):
+            tree.insert(key, key)
+            _check_invariants(tree)
+
+    def test_deleting_any_key_keeps_every_other_key_findable(self) -> None:
+        """Delete each key in turn from a fresh tree; all the others survive."""
+        total = 20
+        for order in (3, 4, 5):
+            for victim in range(total):
+                tree = BTree(order=order)
+                for key in range(total):
+                    tree.insert(key, key)
+                assert tree.delete(victim, victim)
+                _check_invariants(tree)
+                for key in range(total):
+                    expected = [] if key == victim else [key]
+                    assert tree.search(key) == expected, (order, victim, key)
+
+    def test_random_inserts_and_deletes_match_a_dict(self) -> None:
+        """Thousands of random operations agree with a plain dict of sets."""
+        for order in (3, 4, 5, 6):
+            rng = random.Random(order)  # noqa: S311 -- seeded test data, not crypto
+            tree = BTree(order=order)
+            model: dict[int, set[int]] = {}
+            for _ in range(1500):
+                key = rng.randrange(60)
+                record = rng.randrange(4)
+                if rng.random() < INSERT_CHANCE:
+                    tree.insert(key, record)
+                    model.setdefault(key, set()).add(record)
+                else:
+                    expected = record in model.get(key, set())
+                    assert tree.delete(key, record) is expected
+                    if expected:
+                        model[key].discard(record)
+                        if not model[key]:
+                            del model[key]
+                _check_invariants(tree)
+            for key in range(60):
+                assert sorted(tree.search(key)) == sorted(model.get(key, set()))
+            assert tree.all_keys() == sorted(model)
+            lo, hi = 10, 40
+            expected_range = sorted({r for k, rs in model.items() if lo <= k <= hi for r in rs})
+            assert tree.find_range(lo, hi) == expected_range
+
+    def test_deleting_everything_leaves_an_empty_leaf_root(self) -> None:
+        """Emptying the cabinet shrinks it back to a single empty drawer."""
+        tree = BTree(order=ORDER_4)
+        for key in range(30):
+            tree.insert(key, key)
+        for key in range(30):
+            assert tree.delete(key, key)
+            _check_invariants(tree)
+        assert tree.root.leaf
+        assert tree.root.keys == []
+
+
+class TestOrderValidation:
+    """A B-Tree needs room for at least two keys per drawer."""
+
+    def test_order_below_three_is_rejected(self) -> None:
+        """Order 2 can't split sensibly, so it is refused up front."""
+        with pytest.raises(ValueError, match="order"):
+            BTree(order=2)
