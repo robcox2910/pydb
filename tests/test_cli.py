@@ -7,7 +7,9 @@ an interactive terminal.
 
 from pathlib import Path
 
-from pydb.cli import _execute_sql, _handle_dot_command
+import pytest
+
+from pydb.cli import _execute_sql, _handle_dot_command, repl
 from pydb.database import Database
 from pydb.schema import Column, Schema
 from pydb.types import DataType
@@ -139,3 +141,48 @@ class TestSQLExecution:
         db = _make_db(tmp_path)
         result = _execute_sql("SELECT * FROM cards WHERE name = 'MissingNo'", db)
         assert "empty result set" in result
+
+
+def _run_repl(tmp_path: Path, lines: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drive the REPL with scripted input; running out of lines is like Ctrl-D."""
+    remaining = iter(lines)
+
+    def fake_input(_prompt: str) -> str:
+        try:
+            return next(remaining)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    db = Database(path=tmp_path)
+    db.load()
+    repl(db)
+
+
+def _rows_on_disk(tmp_path: Path, table: str) -> int:
+    """Open the database fresh from disk and count a table's rows."""
+    db = Database(path=tmp_path)
+    db.load()
+    return len(db.get_table(table).select())
+
+
+class TestQuittingSavesYourWork:
+    """Leaving the REPL never throws away what you typed."""
+
+    def test_quit_saves_unsaved_changes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: .quit used to exit without saving, losing every INSERT."""
+        _run_repl(
+            tmp_path,
+            ["CREATE TABLE t (x INTEGER)", "INSERT INTO t VALUES (1)", ".quit"],
+            monkeypatch,
+        )
+        assert _rows_on_disk(tmp_path, "t") == 1
+
+    def test_ctrl_d_saves_unsaved_changes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ending input (Ctrl-D) also saves before saying goodbye."""
+        _run_repl(tmp_path, ["CREATE TABLE t (x INTEGER)", "INSERT INTO t VALUES (7)"], monkeypatch)
+        assert _rows_on_disk(tmp_path, "t") == 1

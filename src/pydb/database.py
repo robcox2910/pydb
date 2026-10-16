@@ -30,7 +30,7 @@ class Database:
 
     """
 
-    __slots__ = ("_path", "_storage", "_tables", "_views")
+    __slots__ = ("_dropped", "_path", "_storage", "_tables", "_views")
 
     def __init__(self, path: str | Path) -> None:
         """Create or open a database at the given path."""
@@ -38,6 +38,8 @@ class Database:
         self._storage = StorageEngine(data_dir=self._path)
         self._tables: dict[str, Table] = {}
         self._views: dict[str, Query] = {}
+        # Tables dropped since the last save -- their files go on save().
+        self._dropped: set[str] = set()
 
     @property
     def path(self) -> Path:
@@ -72,6 +74,7 @@ class Database:
             raise DatabaseError(msg)
         table = Table(name=name, schema=schema)
         self._tables[name] = table
+        self._dropped.discard(name)
         return table
 
     def get_table(self, name: str) -> Table:
@@ -94,7 +97,11 @@ class Database:
         return table
 
     def drop_table(self, name: str) -> None:
-        """Remove a table from the database and delete its data file.
+        """Remove a table from the database.
+
+        Like every other change, this only reaches the disk when you call
+        ``save()`` -- that's when the table's data file is deleted. Quit
+        without saving and the table is still there next time.
 
         Args:
             name: The table name.
@@ -107,8 +114,7 @@ class Database:
             msg = f"Table {name!r} does not exist"
             raise DatabaseError(msg)
         del self._tables[name]
-        if self._storage.table_exists(name):
-            self._storage.delete_table(name)
+        self._dropped.add(name)
 
     def table_names(self) -> list[str]:
         """Return the names of all tables in the database."""
@@ -154,9 +160,18 @@ class Database:
         return sorted(self._views.keys())
 
     def save(self) -> None:
-        """Save all tables to disk."""
+        """Save all tables to disk, and delete the files of dropped tables.
+
+        Each table's file is replaced safely on its own, but a save of
+        several tables is not one all-or-nothing step: a crash part-way can
+        leave some tables saved and others not.
+        """
         for table in self._tables.values():
             self._save_one(table)
+        for name in self._dropped:
+            if name not in self._tables and self._storage.table_exists(name):
+                self._storage.delete_table(name)
+        self._dropped.clear()
 
     def save_table(self, name: str) -> None:
         """Save a single table to disk.
@@ -187,6 +202,7 @@ class Database:
         Any tables already in memory are replaced by the on-disk versions.
 
         """
+        self._dropped.clear()
         for name in self._storage.list_tables():
             self._load_one(name)
 

@@ -1,15 +1,20 @@
 """Write-Ahead Log (WAL) -- crash recovery for the database.
 
 Before making any change to a table, the WAL writes a record of the
-operation to a log file. If the database crashes mid-write, it reads
-the log on startup and either replays committed operations or discards
-uncommitted ones.
+operation to a log file. After a crash, ``recover()`` reads the log and
+hands back the operations of every *committed* transaction, in order, so
+they can be re-applied; anything never committed (or rolled back) is
+left out.
+
+(PyDB keeps this as a standalone teaching module -- its tables don't log
+through it yet. See the README.)
 
 Think of it like writing each change on a sticky note before applying
 it to the actual card binder.
 """
 
 import json
+import os
 from pathlib import Path
 
 from pydb.errors import PyDBError
@@ -69,17 +74,26 @@ class WriteAheadLog:
         )
 
     def log_commit(self, txn_id: str) -> None:
-        """Log that a transaction has been committed."""
-        self._append({"type": _COMMIT, "txn": txn_id})
+        """Log that a transaction has been committed -- and force it to disk.
+
+        Writing to a file normally only reaches the computer's memory; the
+        disk gets it a little later. A commit is a promise ("this is saved"),
+        so we call ``fsync`` to make sure it really is on the disk before we
+        return.
+        """
+        self._append({"type": _COMMIT, "txn": txn_id}, sync=True)
 
     def log_rollback(self, txn_id: str) -> None:
         """Log that a transaction has been rolled back."""
         self._append({"type": _ROLLBACK, "txn": txn_id})
 
-    def _append(self, entry: dict[str, str | dict[str, str]]) -> None:
-        """Append a JSON entry to the log file."""
+    def _append(self, entry: dict[str, str | dict[str, str]], *, sync: bool = False) -> None:
+        """Append a JSON entry to the log file (forcing it to disk if ``sync``)."""
         with self._log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
+            if sync:
+                f.flush()
+                os.fsync(f.fileno())
 
     def read_entries(self) -> list[dict[str, str | dict[str, str]]]:
         """Read all log entries from the WAL file.
@@ -87,18 +101,30 @@ class WriteAheadLog:
         Returns:
             A list of log entry dicts, in order.
 
+        Raises:
+            WALError: If an entry *before* the last line is damaged. A
+                damaged last line is expected after a crash mid-write (a
+                "torn" write) and is skipped; damage anywhere else means
+                the log can't be trusted.
+
         """
         if not self._log_path.exists():
             return []
+        lines = self._log_path.read_text(encoding="utf-8").splitlines()
+        while lines and not lines[-1].strip():
+            lines.pop()
         entries: list[dict[str, str | dict[str, str]]] = []
-        with self._log_path.open(encoding="utf-8") as f:
-            for raw_line in f:
-                stripped = raw_line.strip()
-                if stripped:
-                    try:
-                        entries.append(json.loads(stripped))
-                    except json.JSONDecodeError:
-                        continue  # Skip corrupted entries during recovery.
+        for number, raw_line in enumerate(lines, start=1):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            try:
+                entries.append(json.loads(stripped))
+            except json.JSONDecodeError as exc:
+                if number == len(lines):
+                    break  # torn final write from a crash -- safe to drop
+                msg = f"WAL is corrupt at line {number}"
+                raise WALError(msg) from exc
         return entries
 
     def get_committed_txns(self) -> set[str]:
@@ -129,6 +155,29 @@ class WriteAheadLog:
         """
         return [
             e for e in self.read_entries() if e.get("txn") == txn_id and e.get("type") == _OPERATION
+        ]
+
+    def recover(self) -> list[dict[str, str | dict[str, str]]]:
+        """Return every committed operation, in the order it was logged.
+
+        This is what to replay after a crash: operations from transactions
+        that reached COMMIT. Transactions that were rolled back, or that
+        never finished, are left out -- as if they never happened.
+
+        Raises:
+            WALError: If the log is damaged before its final line.
+
+        """
+        entries = self.read_entries()
+        committed = {
+            txn
+            for entry in entries
+            if entry.get("type") == _COMMIT and isinstance(txn := entry.get("txn"), str)
+        }
+        return [
+            entry
+            for entry in entries
+            if entry.get("type") == _OPERATION and entry.get("txn") in committed
         ]
 
     def clear(self) -> None:

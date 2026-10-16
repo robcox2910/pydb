@@ -100,14 +100,35 @@ class TestDropTable:
         with pytest.raises(DatabaseError, match="does not exist"):
             db.drop_table("missing")
 
-    def test_drop_deletes_file(self, tmp_path: Path) -> None:
-        """Dropping a saved table should remove its file from disk."""
+    def test_drop_deletes_file_when_saved(self, tmp_path: Path) -> None:
+        """Like every other change, a drop reaches the disk on save()."""
         db = Database(path=tmp_path)
         db.create_table("cards", _make_schema())
         db.save()
-        assert (tmp_path / "cards.json").exists()
         db.drop_table("cards")
+        assert (tmp_path / "cards.json").exists(), "nothing is written until save()"
+        db.save()
         assert not (tmp_path / "cards.json").exists()
+
+    def test_unsaved_drop_is_forgotten_on_reload(self, tmp_path: Path) -> None:
+        """Regression: DROP used to delete the file at once, unlike every other change."""
+        db = Database(path=tmp_path)
+        db.create_table("cards", _make_schema())
+        db.save()
+        db.drop_table("cards")
+        reopened = Database(path=tmp_path)
+        reopened.load()
+        assert "cards" in reopened.table_names()
+
+    def test_drop_then_recreate_keeps_the_new_table(self, tmp_path: Path) -> None:
+        """Dropping and re-creating a table, then saving, keeps the new one."""
+        db = Database(path=tmp_path)
+        db.create_table("cards", _make_schema())
+        db.save()
+        db.drop_table("cards")
+        db.create_table("cards", _make_schema())
+        db.save()
+        assert (tmp_path / "cards.json").exists()
 
 
 class TestSaveAndLoad:
