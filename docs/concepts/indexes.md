@@ -77,6 +77,26 @@ A B-Tree of **order** *m* follows these rules:
 3. All leaves are at the **same depth** (the cabinet is balanced).
 4. Keys within each node are **sorted**.
 5. When a node overflows, it **splits** and pushes the middle key up.
+6. Every node except the top one keeps **at least half** its drawer space
+   in use -- that's what stops the cabinet from going lopsided.
+
+### Taking cards out
+
+Deleting is the trickiest part, because pulling a card can leave a drawer
+too empty (breaking rule 6):
+
+- **Card in a bottom drawer?** Just take it out.
+- **Card is a label in a middle drawer?** The drawers below rely on that
+  label to know which way to go, so we can't just remove it. Instead we
+  swap in the **biggest card from the left side** -- it still sits neatly
+  between the two halves -- and remove *that* card from its bottom drawer.
+- **Drawer now too empty?** First try to **borrow** a card from a
+  neighbouring drawer (it passes through the parent's label on the way,
+  like a rotation). If the neighbours are only just full enough themselves,
+  **merge** the drawer with a neighbour, pulling the label between them down
+  into the merged drawer.
+- **Top drawer ends up empty?** Its one remaining child becomes the new top,
+  and the cabinet gets one level shorter.
 
 We use order 4 by default -- small enough to see the splits happening in
 tests, big enough to be useful.

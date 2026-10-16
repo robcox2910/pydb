@@ -271,3 +271,20 @@ class TestQueryPlanModel:
         plan = QueryPlan(strategy="Full table scan on cards")
         assert not plan.use_index
         assert plan.index_name == ""
+
+
+class TestIndexSurvivesDeletes:
+    """Deleting rows never makes an index forget the rows that are left."""
+
+    def test_indexed_lookup_after_delete_finds_remaining_rows(self, tmp_path: Path) -> None:
+        """Regression: deleting one row used to hide later keys from the index."""
+        db = Database(tmp_path)
+        execute(parse_sql("CREATE TABLE nums (n INTEGER)"), db)
+        for n in range(20):
+            execute(parse_sql(f"INSERT INTO nums VALUES ({n})"), db)
+        execute(parse_sql("CREATE INDEX idx_n ON nums (n)"), db)
+        deleted = 7
+        execute(parse_sql(f"DELETE FROM nums WHERE n = {deleted}"), db)
+        for n in range(20):
+            rows = execute(parse_sql(f"SELECT * FROM nums WHERE n = {n}"), db)
+            assert rows == ([] if n == deleted else [{"n": n}]), n
