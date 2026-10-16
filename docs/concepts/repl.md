@@ -46,7 +46,7 @@ Besides SQL, the REPL understands a few **dot commands**:
 
 | Command | What it does |
 |---------|-------------|
-| `.quit` or `.exit` | Leave the REPL |
+| `.quit` or `.exit` | Save everything and leave the REPL |
 | `.tables` | List all tables |
 | `.schema <table>` | Show a table's column definitions |
 | `.save` | Save all tables to disk |
@@ -55,7 +55,8 @@ Besides SQL, the REPL understands a few **dot commands**:
 ## What We Test
 
 - Dot commands return the correct output (`.tables`, `.schema`, `.help`).
-- `.quit` and `.exit` signal the REPL to stop.
+- `.quit`, `.exit` and Ctrl-D save every table before the REPL stops, so
+  nothing you typed is lost.
 - SQL queries are parsed, executed, and formatted as pretty tables.
 - Invalid SQL shows a clear parse error.
 - Querying a missing table shows a clear query error.

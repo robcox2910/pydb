@@ -31,7 +31,7 @@ Dot commands:
   .schema <table>  Show a table's column definitions
   .save            Save all tables to disk
   .help            Show this help message
-  .quit / .exit    Exit the REPL
+  .quit / .exit    Save and exit the REPL
 """.strip()
 
 
@@ -129,7 +129,8 @@ def repl(database: Database) -> None:
         try:
             line = input(PROMPT).strip()
         except EOFError, KeyboardInterrupt:
-            _write("\nGoodbye!")
+            _write("")
+            _save_and_say_goodbye(database)
             break
 
         if not line:
@@ -138,12 +139,18 @@ def repl(database: Database) -> None:
         if line.startswith("."):
             result = _handle_dot_command(line, database)
             if result is None:
-                _write("Goodbye!")
+                _save_and_say_goodbye(database)
                 break
             _write(result)
         else:
             output = _execute_sql(line, database)
             _write(output)
+
+
+def _save_and_say_goodbye(database: Database) -> None:
+    """Save everything before leaving, so no typed work is ever lost."""
+    database.save()
+    _write("All tables saved. Goodbye!")
 
 
 def _write(text: str) -> None:

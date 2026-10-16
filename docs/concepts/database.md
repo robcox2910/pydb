@@ -63,7 +63,9 @@ scores = db2.get_table("high_scores")
 ## The Catalog
 
 The database keeps a **catalog** in memory -- a list of which tables exist.
-When you call `save()`, each table gets its own `.json` file:
+Changes only reach the disk when you call `save()` -- and that includes
+dropping a table: its file is deleted on the next `save()`, not the moment you
+drop it. When you call `save()`, each table gets its own `.json` file:
 
 ```
 my_game_db/

@@ -4,9 +4,12 @@ The WAL writes every change to a log file before applying it. If the
 database crashes, it reads the log to recover.
 """
 
+import os
 from pathlib import Path
 
-from pydb.wal import WriteAheadLog
+import pytest
+
+from pydb.wal import WALError, WriteAheadLog
 
 TXN_1 = "txn_001"
 TXN_2 = "txn_002"
@@ -121,3 +124,60 @@ class TestWALPath:
         log_path = tmp_path / "wal.log"
         wal = WriteAheadLog(log_path=log_path)
         assert wal.path == log_path
+
+
+class TestRecovery:
+    """After a crash, recover() hands back exactly the committed work, in order."""
+
+    def test_recover_returns_committed_operations_in_order(self, tmp_path: Path) -> None:
+        """Only committed transactions are replayed, in the order they were logged."""
+        wal = WriteAheadLog(tmp_path / "wal.log")
+        wal.log_begin("t1")
+        wal.log_operation("t1", "cards", "INSERT", {"id": "1"})
+        wal.log_begin("t2")
+        wal.log_operation("t2", "cards", "INSERT", {"id": "2"})
+        wal.log_operation("t1", "cards", "INSERT", {"id": "3"})
+        wal.log_commit("t1")
+        wal.log_begin("t3")
+        wal.log_operation("t3", "cards", "DELETE", {"id": "1"})
+        wal.log_rollback("t3")
+        ops = wal.recover()
+        assert [op["data"] for op in ops] == [{"id": "1"}, {"id": "3"}]
+
+    def test_half_written_last_line_is_ignored(self, tmp_path: Path) -> None:
+        """A crash mid-write leaves a torn final line; recovery skips just that."""
+        wal = WriteAheadLog(tmp_path / "wal.log")
+        wal.log_begin("t1")
+        wal.log_operation("t1", "cards", "INSERT", {"id": "1"})
+        wal.log_commit("t1")
+        with wal.path.open("a", encoding="utf-8") as f:
+            f.write('{"type": "OP", "txn": "t2", "ta')
+        assert len(wal.recover()) == 1
+
+    def test_damage_in_the_middle_is_an_error(self, tmp_path: Path) -> None:
+        """Regression: a corrupt middle entry used to be skipped silently."""
+        wal = WriteAheadLog(tmp_path / "wal.log")
+        wal.log_begin("t1")
+        with wal.path.open("a", encoding="utf-8") as f:
+            f.write("not json at all\n")
+        wal.log_commit("t1")
+        with pytest.raises(WALError, match="line 2"):
+            wal.recover()
+
+    def test_commit_is_forced_to_disk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A COMMIT must really reach the disk (fsync), or it isn't durable."""
+        synced: list[int] = []
+        real_fsync = os.fsync
+
+        def recording_fsync(fd: int) -> None:
+            synced.append(fd)
+            real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", recording_fsync)
+        wal = WriteAheadLog(tmp_path / "wal.log")
+        wal.log_begin("t1")
+        assert synced == []
+        wal.log_commit("t1")
+        assert len(synced) == 1
