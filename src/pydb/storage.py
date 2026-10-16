@@ -10,6 +10,7 @@ never corrupts your data.
 
 from pathlib import Path
 
+from pydb.atomic import atomic_write_text
 from pydb.errors import PyDBError
 from pydb.record import Record
 from pydb.schema import Schema
@@ -21,7 +22,6 @@ class StorageError(PyDBError):
 
 
 TABLE_FILE_SUFFIX = ".json"
-TEMP_FILE_SUFFIX = ".json.tmp"
 
 
 class StorageEngine:
@@ -51,10 +51,6 @@ class StorageEngine:
         """Return the file path for a table."""
         return self._data_dir / f"{table_name}{TABLE_FILE_SUFFIX}"
 
-    def _temp_path(self, table_name: str) -> Path:
-        """Return the temporary file path for a table."""
-        return self._data_dir / f"{table_name}{TEMP_FILE_SUFFIX}"
-
     def save_table(
         self,
         name: str,
@@ -65,7 +61,8 @@ class StorageEngine:
         """Save a table's complete state to disk.
 
         Uses write-then-rename for crash safety: data is written to a temp
-        file first, then atomically renamed to the final path.
+        file, forced to disk with ``fsync``, then atomically renamed to the
+        final path (see ``pydb.atomic``).
 
         Args:
             name: The table name.
@@ -78,12 +75,8 @@ class StorageEngine:
 
         """
         json_str = serialize_table_data(name, schema, records, next_id)
-        temp_path = self._temp_path(name)
-        final_path = self._table_path(name)
-
         try:
-            temp_path.write_text(json_str, encoding="utf-8")
-            temp_path.replace(final_path)
+            atomic_write_text(self._table_path(name), json_str)
         except OSError as exc:
             msg = f"Failed to save table {name!r}: {exc}"
             raise StorageError(msg) from exc
