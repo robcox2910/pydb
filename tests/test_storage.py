@@ -4,6 +4,7 @@ The storage engine is the notebook on the shelf -- it saves tables to disk
 and loads them back. These tests verify that data survives the round trip.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,10 @@ NEXT_ID = 3
 POWER_55 = 55
 POWER_52 = 52
 PI = 3.14
+
+
+class _SimulatedCrashError(OSError):
+    """Stands in for the power going out part-way through a save."""
 
 
 def _make_schema() -> Schema:
@@ -97,10 +102,29 @@ class TestSaveAndLoad:
         assert next_id == new_next_id
 
     def test_temp_file_cleaned_up(self, tmp_path: Path) -> None:
-        """After a successful save, the temp file should not remain."""
+        """After a successful save, no temp file should remain."""
         engine = StorageEngine(data_dir=tmp_path)
         engine.save_table("cards", _make_schema(), _make_records(), NEXT_ID)
-        assert not (tmp_path / "cards.json.tmp").exists()
+        assert [p.name for p in tmp_path.iterdir()] == ["cards.json"]
+
+    def test_interrupted_save_keeps_the_previous_table(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash before the swap leaves the old table intact and no scrap files."""
+        engine = StorageEngine(data_dir=tmp_path)
+        engine.save_table("cards", _make_schema(), _make_records(), NEXT_ID)
+        before = (tmp_path / "cards.json").read_bytes()
+
+        def crash(*_args: object) -> None:
+            raise _SimulatedCrashError
+
+        monkeypatch.setattr(os, "replace", crash)
+        with pytest.raises(StorageError):
+            engine.save_table("cards", _make_schema(), [], NEXT_ID)
+        monkeypatch.undo()
+        assert (tmp_path / "cards.json").read_bytes() == before
+        assert [p.name for p in tmp_path.iterdir()] == ["cards.json"]
+        assert len(engine.load_table("cards")[2]) == len(_make_records())
 
 
 class TestLoadErrors:

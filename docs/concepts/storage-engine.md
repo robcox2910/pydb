@@ -44,12 +44,16 @@ What if the power goes out halfway through a save? You'd end up with a
 half-written file -- corrupted data! Our storage engine uses a simple trick
 called **write-then-rename**:
 
-1. Write the new data to a **temporary file** (e.g., `cards.json.tmp`).
-2. Only when the write is 100% complete, **rename** the temp file to the
-   real name.
+1. Write the new data to a **temporary file** right next to the real one.
+2. Make sure the **ink is dry**: `fsync` pushes the bytes out of the
+   computer's memory and onto the disk. (Without this, "finished writing"
+   can just mean "finished writing into memory" -- and a power cut loses it.)
+3. Only then, **rename** the temp file to the real name.
 
 Renaming is an **atomic** operation on most file systems -- it either happens
-completely or not at all. So you never end up with a half-written file.
+completely or not at all. So you never end up with a half-written file. If
+anything goes wrong before the rename, the temp file is deleted and your old
+data is untouched. The code lives in `atomic.py`.
 
 ## What We Test
 
