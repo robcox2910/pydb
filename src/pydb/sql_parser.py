@@ -6,7 +6,7 @@ understands. It's like reading a sentence word by word and building up
 the meaning as you go.
 """
 
-from pydb.errors import PyDBError
+from pydb.errors import PyDBError, SchemaError
 from pydb.query import (
     AggFunc,
     AggregateColumn,
@@ -23,6 +23,7 @@ from pydb.query import (
 )
 from pydb.record import Value
 from pydb.schema import Column
+from pydb.sql_literals import LITERAL_TYPES, parse_typed_literal
 from pydb.sql_tokenizer import Token, TokenType, tokenize
 from pydb.statements import (
     CreateIndexStatement,
@@ -71,6 +72,8 @@ _TYPE_MAP: dict[str, DataType] = {
     "FLOAT": DataType.FLOAT,
     "BOOLEAN": DataType.BOOLEAN,
     "BOOL": DataType.BOOLEAN,
+    "DATE": DataType.DATE,
+    "TIMESTAMP": DataType.TIMESTAMP,
 }
 
 
@@ -516,7 +519,7 @@ class _Parser:
 
         return left
 
-    def _parse_condition(self) -> Condition:
+    def _parse_condition(self) -> WhereClause:
         """Parse a single comparison condition: column op value.
 
         Supports:
@@ -524,6 +527,7 @@ class _Parser:
         - Aggregate in HAVING: COUNT(*) > 1
         - IN subquery: column IN (SELECT ...)
         - Scalar subquery: column > (SELECT AVG(...) FROM ...)
+        - Range: column BETWEEN low AND high (inclusive; becomes >= AND <=)
         """
         token = self._peek()
         if token.token_type == TokenType.KEYWORD and token.value in _AGG_FUNCS:
@@ -542,6 +546,13 @@ class _Parser:
                 return Condition(column=column, operator=Operator.IN, value=Subquery(query=inner))
             msg = "IN requires a subquery: IN (SELECT ...)"
             raise ParseError(msg)
+
+        if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "BETWEEN":
+            self._advance()
+            low = self._parse_value()
+            self._expect(TokenType.KEYWORD, "AND")
+            high = self._parse_value()
+            return And(Condition(column, Operator.GE, low), Condition(column, Operator.LE, high))
 
         op_token = self._expect(TokenType.OPERATOR)
         if op_token.value not in _OPERATOR_MAP:
@@ -570,8 +581,17 @@ class _Parser:
         )
 
     def _parse_value(self) -> Value:
-        """Parse a literal value (string, number, or boolean)."""
+        """Parse a literal value (string, number, boolean, or DATE/TIMESTAMP literal)."""
         token = self._advance()
+        if (
+            token.token_type == TokenType.IDENTIFIER
+            and token.value.upper() in LITERAL_TYPES
+            and self._peek().token_type == TokenType.STRING
+        ):
+            try:
+                return parse_typed_literal(token.value, self._advance().value)
+            except SchemaError as exc:
+                raise ParseError(str(exc)) from exc
 
         match token.token_type:
             case TokenType.STRING:

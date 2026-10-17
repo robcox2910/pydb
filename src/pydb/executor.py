@@ -17,6 +17,7 @@ the requested operation:
 """
 
 from collections.abc import Sequence
+from datetime import date, datetime
 from typing import Any, Protocol
 
 from pydb.database import Database
@@ -37,6 +38,7 @@ from pydb.query import (
 )
 from pydb.record import Record, Value
 from pydb.schema import Schema
+from pydb.sql_literals import mismatched_date_comparison
 from pydb.statements import (
     CreateIndexStatement,
     CreateTableStatement,
@@ -278,6 +280,7 @@ def _execute_simple_select(query: Query, table: Table, database: Database) -> Ex
         # Resolve any subqueries in the WHERE clause before filtering.
         where = _resolve_subqueries(where, database)
         _validate_where_columns(where, valid_cols)
+        _check_date_comparisons(where, table)
         records = _select_records(table, where)
     else:
         records = table.select()
@@ -383,6 +386,11 @@ def _group_records(
 
 def _compute_aggregate(agg: AggregateColumn, records: Sequence[_RowLike]) -> Value:
     """Compute a single aggregate function over a group of records."""
+    if agg.function in (AggFunc.SUM, AggFunc.AVG) and any(
+        isinstance(r[agg.column], (date, datetime)) for r in records
+    ):
+        msg = f"{agg.function.value} is not supported on DATE or TIMESTAMP columns"
+        raise QueryError(msg)
     match agg.function:
         case AggFunc.COUNT:
             return len(records)
@@ -484,6 +492,13 @@ def _matches_dict(clause: WhereClause, row: dict[str, Value]) -> bool:
     if isinstance(clause, And):
         return _matches_dict(clause.left, row) and _matches_dict(clause.right, row)
     return _matches_dict(clause.left, row) or _matches_dict(clause.right, row)
+
+
+def _check_date_comparisons(clause: WhereClause, table: Table) -> None:
+    """Raise QueryError if a DATE/TIMESTAMP column meets the wrong kind of value."""
+    problem = mismatched_date_comparison(clause, table.schema)
+    if problem is not None:
+        raise QueryError(problem)
 
 
 def _validate_where_columns(clause: WhereClause, valid_columns: set[str]) -> None:
@@ -614,6 +629,8 @@ def _execute_update(stmt: UpdateStatement, database: Database) -> ExecuteResult:
     """Execute an UPDATE statement."""
     table = _get_table(database, stmt.table, "UPDATE")
 
+    if stmt.where is not None:
+        _check_date_comparisons(stmt.where, table)
     records = table.select(where=stmt.where.matches) if stmt.where is not None else table.select()
 
     count = 0
@@ -629,6 +646,8 @@ def _execute_delete(stmt: DeleteStatement, database: Database) -> ExecuteResult:
     """Execute a DELETE FROM statement."""
     table = _get_table(database, stmt.table, "DELETE")
 
+    if stmt.where is not None:
+        _check_date_comparisons(stmt.where, table)
     records = table.select(where=stmt.where.matches) if stmt.where is not None else table.select()
 
     count = 0

@@ -28,6 +28,11 @@ HOUR_UTC = 10
 HALF = 1.5
 
 
+def _naive() -> datetime:
+    """Build a deliberately timezone-less datetime without a lint suppression."""
+    return datetime.fromisoformat("2026-01-01T00:00:00")
+
+
 def _table() -> Table:
     """Build a table with a DATE and a TIMESTAMP column."""
     schema = Schema(
@@ -50,7 +55,7 @@ class TestCheckValue:
             (1, DataType.FLOAT),
             (True, DataType.FLOAT),
             (datetime(2026, 1, 1, tzinfo=UTC), DataType.DATE),
-            (datetime(2026, 1, 1), DataType.TIMESTAMP),  # noqa: DTZ001
+            (_naive(), DataType.TIMESTAMP),
             (DAY, DataType.TIMESTAMP),
             ("2026-10-17", DataType.DATE),
             (DAY, DataType.TEXT),
@@ -97,7 +102,7 @@ class TestCheckValue:
         """A naive datetime is refused by the table."""
         table = _table()
         with pytest.raises(SchemaError):
-            table.insert({"day": DAY, "at": datetime(2026, 10, 17, 12)})  # noqa: DTZ001
+            table.insert({"day": DAY, "at": _naive()})
 
 
 class TestIso:
@@ -136,7 +141,7 @@ class TestIso:
     def test_to_iso_rejects_naive(self) -> None:
         """Naive datetimes cannot be written."""
         with pytest.raises(SchemaError):
-            to_iso(datetime(2026, 1, 1))  # noqa: DTZ001
+            to_iso(_naive())
 
     @pytest.mark.parametrize(
         ("text", "data_type"),

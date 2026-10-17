@@ -41,10 +41,11 @@ PYTHON_TYPES: dict[DataType, type] = {
 def check_value(value: object, data_type: DataType) -> Value:
     """Validate a value against a column type and normalise it.
 
-    This is the one bouncer for every type. Types must match exactly:
-    ``bool`` is not an INTEGER or FLOAT, an ``int`` is not a FLOAT (the
-    schema widens those before validating), a ``datetime`` is not a DATE,
-    and a TIMESTAMP must carry a timezone and is converted to UTC.
+    This is the one bouncer for every type. Subclasses are welcome (a
+    ``StrEnum`` member is still text), with three exceptions: ``bool`` is
+    not an INTEGER, an ``int`` is not a FLOAT (the schema widens those
+    before validating), and a ``datetime`` is not a DATE. A TIMESTAMP must
+    carry a timezone and is converted to UTC.
 
     Args:
         value: The value to check.
@@ -58,9 +59,10 @@ def check_value(value: object, data_type: DataType) -> Value:
 
     """
     expected = PYTHON_TYPES[data_type]
-    if type(value) is not expected and not (
-        data_type is DataType.TIMESTAMP and isinstance(value, datetime)
-    ):
+    wrong_kind = (data_type is DataType.INTEGER and isinstance(value, bool)) or (
+        data_type is DataType.DATE and isinstance(value, datetime)
+    )
+    if wrong_kind or not isinstance(value, expected):
         msg = f"expects {data_type.value}, got {type(value).__name__}"
         raise SchemaError(msg)
     if isinstance(value, datetime):
