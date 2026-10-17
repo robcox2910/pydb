@@ -393,3 +393,14 @@ class TestOrderValidation:
         """Order 2 can't split sensibly, so it is refused up front."""
         with pytest.raises(ValueError, match="order"):
             BTree(order=2)
+
+
+class TestDuplicateIdOrder:
+    """IDs that share a key are always listed in ascending order."""
+
+    def test_ids_are_sorted_whatever_the_insert_order(self) -> None:
+        """Insert IDs 3, 1, 2 under one key: search returns [1, 2, 3]."""
+        tree = BTree()
+        for record_id in (3, 1, 2, 1):
+            tree.insert("x", record_id)
+        assert tree.search("x") == [1, 2, 3]

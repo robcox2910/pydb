@@ -13,6 +13,7 @@ from datetime import datetime
 from pydb.errors import SchemaError
 from pydb.record import Record, Value
 from pydb.types import DataType, check_value
+from pydb.unique import UniqueRegister
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,17 +140,24 @@ class Schema:
     def check_constraints(
         self,
         values: Mapping[str, Value],
-        records: Collection[Record],
+        records: Collection[Record] = (),
         exclude_record_id: int | None = None,
+        *,
+        unique: UniqueRegister | None = None,
     ) -> None:
         """Check NOT NULL, UNIQUE, and PRIMARY KEY constraints against a table's rows.
 
+        With a *unique* register (what ``Table`` passes) each UNIQUE or
+        PRIMARY KEY check is one look-up and *records* is not read.
+        Without one, every row in *records* is compared with ``==``.
+
         Args:
             values: The column values to check.
-            records: The rows already in the table.
+            records: The rows already in the table (ignored with *unique*).
             exclude_record_id: A record ID to exclude from uniqueness
                 checks (used during UPDATE so the record doesn't
                 conflict with itself).
+            unique: The table's register of UNIQUE / PRIMARY KEY values.
 
         Raises:
             SchemaError: If any constraint is violated.
@@ -168,13 +176,23 @@ class Schema:
 
             # UNIQUE / PRIMARY KEY: no duplicate values.
             if (col.unique or col.primary_key) and val is not None:
-                for record in records:
-                    if exclude_record_id is not None and record.record_id == exclude_record_id:
-                        continue
-                    if record[col.name] == val:
-                        constraint = "PRIMARY KEY" if col.primary_key else "UNIQUE"
-                        msg = f"{constraint} violation: {col.name!r} value {val!r} already exists"
-                        raise SchemaError(msg)
+                if unique is not None:
+                    taken = unique.is_taken(col.name, val, exclude_record_id)
+                else:
+                    taken = any(
+                        record[col.name] == val
+                        for record in records
+                        if exclude_record_id is None or record.record_id != exclude_record_id
+                    )
+                if taken:
+                    constraint = "PRIMARY KEY" if col.primary_key else "UNIQUE"
+                    msg = f"{constraint} violation: {col.name!r} value {val!r} already exists"
+                    raise SchemaError(msg)
+
+    @property
+    def unique_columns(self) -> list[str]:
+        """Return the names of the PRIMARY KEY and UNIQUE columns, in order."""
+        return [col.name for col in self._columns if col.primary_key or col.unique]
 
     def __repr__(self) -> str:
         """Return a developer-friendly string representation."""

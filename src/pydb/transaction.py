@@ -1,9 +1,16 @@
 """Transactions -- the "no take-backs" rule with a safety net.
 
 A transaction groups several database operations so they either all
-happen (commit) or none happen (rollback). Under the hood, we snapshot
-each table's state (rows *and* index definitions) at the start and restore
-it on rollback.
+happen (commit) or none happen (rollback).
+
+Under the hood there is an *undo log* (see ``pydb.rows``): instead of
+photocopying a page before scribbling on it, you write down how to undo
+each scribble. Every insert, update, delete and index change -- however
+it is made (a ``Table`` you got earlier, SQL, ...) -- first notes its
+opposite. Rollback follows the notes from newest to oldest; commit throws
+them away. Each note costs the same however big the table is, and no
+table is ever copied. Tables created inside the transaction are dropped
+on rollback, and dropped ones are put back (the very same ``Table``).
 
 While a transaction is open, the database holds every ``Change`` note in a
 bundle instead of committing it straight away. ``commit()`` hands the whole
@@ -25,13 +32,12 @@ transaction in the thread that started it, or use it as a context manager::
 """
 
 import threading
-from dataclasses import dataclass
 from types import TracebackType
 
 from pydb.commits import is_committed
 from pydb.database import Database, DatabaseError
 from pydb.errors import PyDBError
-from pydb.record import Record
+from pydb.rows import UndoLog
 from pydb.table import Table
 
 
@@ -39,32 +45,15 @@ class TransactionError(PyDBError):
     """Raise when a transaction operation is invalid."""
 
 
-@dataclass(frozen=True, slots=True)
-class _TableSnapshot:
-    """A frozen copy of a table's state for rollback.
-
-    Args:
-        table: The table object itself (rollback restores it in place).
-        records: A copy of all records.
-        next_id: The next auto-increment ID.
-        indexes: ``(name, column)`` for each index.
-
-    """
-
-    table: Table
-    records: list[Record]
-    next_id: int
-    indexes: list[tuple[str, str]]
-
-
 class Transaction:
     """Wrap a database session with commit/rollback semantics.
 
-    On creation, takes the database's lock, snapshots every table and
-    starts holding changes. On commit, delivers the held changes as one
-    batch and discards the snapshots. On rollback, restores every table from
-    its snapshot and discards the held changes. Either way the lock is
-    handed back -- also when a commit fails.
+    On creation, takes the database's lock, starts holding changes and
+    hands every table an undo log (``Table.set_undo_log``). On commit,
+    delivers the held changes as one batch and throws the undo log away.
+    On rollback, replays the undo log newest first, puts back tables that
+    were dropped or replaced, removes tables created inside the
+    transaction, and discards the held changes. Either way the lock is handed back -- also when a commit fails.
 
     Args:
         database: The database to transact against.
@@ -80,20 +69,21 @@ class Transaction:
         "_database",
         "_finished",
         "_holding",
-        "_original_table_names",
+        "_originals",
         "_owner",
-        "_snapshots",
+        "_undo",
     )
 
     def __init__(self, database: Database) -> None:
-        """Begin a transaction by snapshotting all tables."""
+        """Begin a transaction: lock, hold changes and give every table the undo log."""
         self._database = database
         self._finished = False
         # Set when commit() failed and already rolled back, so a later
         # rollback() (the usual ``except: txn.rollback()``) is a no-op.
         self._commit_failed = False
-        self._snapshots: dict[str, _TableSnapshot] = {}
-        self._original_table_names: frozenset[str] = frozenset()
+        self._undo = UndoLog()
+        # The tables at the start, by name (rollback puts these objects back).
+        self._originals: dict[str, Table] = {}
         database.lock.acquire()  # other threads' transactions finish first
         self._owner = threading.get_ident()
         self._holding = True
@@ -103,8 +93,9 @@ class Transaction:
             self._release()
             raise TransactionError(str(exc)) from exc
         try:
-            self._take_snapshots()
+            self._track_tables()
         except BaseException:
+            self._untrack()
             database.discard_batch()
             self._finished = True
             self._release()
@@ -148,20 +139,17 @@ class Transaction:
             self._holding = False
             self._database.lock.release()
 
-    def _take_snapshots(self) -> None:
-        """Snapshot every table's current state."""
-        self._original_table_names = frozenset(self._database.table_names())
-        for name in self._original_table_names:
-            table = self._database.get_table(name)
-            # A copy of each record, so the snapshot shares nothing with the
-            # live table.
-            snapshot_records = [Record(record_id=r.record_id, data=r.data) for r in table.select()]
-            self._snapshots[name] = _TableSnapshot(
-                table=table,
-                records=snapshot_records,
-                next_id=table.next_id,
-                indexes=table.index_definitions,
-            )
+    def _track_tables(self) -> None:
+        """Remember every table and have each write its undo notes into our log."""
+        for name in self._database.table_names():
+            self._originals[name] = self._database.get_table(name)
+        for table in self._originals.values():
+            table.set_undo_log(self._undo)
+
+    def _untrack(self) -> None:
+        """Stop every table writing undo notes (the transaction is ending)."""
+        for table in self._originals.values():
+            table.set_undo_log(None)
 
     def get_table(self, name: str) -> Table:
         """Return a table from the database for use within this transaction.
@@ -223,15 +211,17 @@ class Transaction:
             self._release()
 
     def _finish_committed(self) -> None:
-        """Mark the transaction committed and drop its snapshots."""
+        """Mark the transaction committed and throw its undo log away."""
         self._finished = True
-        self._snapshots.clear()
+        self._untrack()
+        self._undo.clear()
+        self._originals.clear()
 
     def rollback(self) -> None:
         """Roll back the transaction -- undo all changes.
 
-        Restores every table to the state it was in when the transaction
-        began, and throws away the held changes. Does nothing if a failed
+        Restores every table the transaction changed to the state it was in
+        when the transaction began, and throws away the held changes. Does nothing if a failed
         ``commit()`` already rolled the transaction back.
 
         Raises:
@@ -249,23 +239,35 @@ class Transaction:
             self._release()
 
     def _restore(self) -> None:
-        """Put every table back as it was at the start and end the transaction."""
+        """Put every table back as it was at the start and end the transaction.
+
+        Whatever happens -- even if an undo note fails -- the tables stop
+        writing notes, the catalog is put back and the held changes are
+        thrown away, so the database never stays stuck in a transaction.
+        The first error is passed on.
+        """
         self._finished = True
+        try:
+            self._untrack()
+            # Undo every change in place, newest first, so a reader holding
+            # one of these Table objects never sees the rolled-back work.
+            self._undo.rollback()
+        finally:
+            try:
+                self._restore_catalog()
+            finally:
+                self._database.discard_batch()
+                self._originals.clear()
 
-        # Restore snapshotted tables in place, so a reader holding one of
-        # these Table objects never sees the rolled-back work.
-        for snapshot in self._snapshots.values():
-            snapshot.table.restore(snapshot.records, snapshot.next_id, snapshot.indexes)
-            self._database.replace_table(snapshot.table)
-
-        # Remove tables created during the transaction. The batch is still
-        # open, so these drops are held -- and then thrown away below.
+    def _restore_catalog(self) -> None:
+        """Put every original table back and drop the tables created since."""
+        for table in self._originals.values():
+            self._database.replace_table(table)
+        # The batch is still open, so these drops are held -- and then
+        # thrown away by ``discard_batch``.
         current_names = set(self._database.table_names())
-        for name in current_names - self._original_table_names:
+        for name in current_names - self._originals.keys():
             self._database.drop_table(name)
-
-        self._database.discard_batch()
-        self._snapshots.clear()
 
     @property
     def is_active(self) -> bool:

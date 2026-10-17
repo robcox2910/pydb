@@ -81,6 +81,12 @@ class Record:
         checkpoint happens to snapshot that table. PyDB itself never calls
         it (``Table.update`` swaps in a new ``Record`` instead).
 
+        It also skips the table's UNIQUE register (``pydb.unique``): a
+        value changed here is invisible to later UNIQUE / PRIMARY KEY
+        checks. And a transaction's undo log keeps this very ``Record``
+        object to put back on rollback, so a change made here inside a
+        transaction is *not* rolled back. Use ``Table.update``.
+
         Args:
             values: Column-name-to-value mapping of fields to update.
 
