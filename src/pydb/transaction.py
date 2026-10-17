@@ -153,8 +153,8 @@ class Transaction:
         self._original_table_names = frozenset(self._database.table_names())
         for name in self._original_table_names:
             table = self._database.get_table(name)
-            # Deep-copy records so in-place mutations (update_fields) don't
-            # affect the snapshot.
+            # A copy of each record, so the snapshot shares nothing with the
+            # live table.
             snapshot_records = [Record(record_id=r.record_id, data=r.data) for r in table.select()]
             self._snapshots[name] = _TableSnapshot(
                 table=table,

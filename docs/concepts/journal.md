@@ -104,8 +104,26 @@ further commits until you reopen it or take a [checkpoint](checkpoints.md)
 | `snapshots/` | The photo album: one snapshot file per table |
 | `LOCK` | "Someone's using this!" (see [Locks and Threads](locks-and-threads.md)) |
 
-Without `journal=True`, PyDB behaves exactly as before: nothing is safe on
-disk until you call `save()`.
+Without `journal=True`, nothing is safe on disk until you call `save()`,
+just like before. A few things changed for *every* database, though,
+journalled or not:
+
+- **Copy-on-write updates.** `update()` swaps in a brand-new `Record`; a
+  `Record` you fetched earlier keeps its old values (so rows you are
+  reading never change under you). Fetch the row again to see the change.
+- **One `Transaction` per thread.** Opening a second one in the same
+  thread raises `TransactionError`; a transaction in another thread is
+  waited for.
+- **One shared lock.** Every table shares its database's lock, so threads
+  take turns (see [Locks and Threads](locks-and-threads.md)).
+- **One commit per SQL statement.** A many-row `UPDATE` or `DELETE` is
+  all-or-nothing: if one row fails, none of them change.
+- **Journalled folders are refused.** `Database(path)` without
+  `journal=True` raises `DatabaseError` on a folder that holds a journal
+  or checkpoint, rather than quietly ignoring the journalled data.
+- **Thrown-away tables stop recording.** A table you still hold after it
+  was dropped (or replaced) no longer reports its changes to the database
+  (see [Crash Recovery](crash-recovery.md)).
 
 ## What We Test
 
@@ -117,7 +135,8 @@ disk until you call `save()`.
 - Every kind of change (tables, rows, indexes) is written and read back.
 - Each line's length and CRC-32 checksum are checked when it is read.
 - Every commit is fsynced when `sync=True`; a failed write undoes the commit.
-- `journal=False` databases behave exactly as before.
+- `journal=False` databases behave as before, apart from the changes
+  listed above.
 
 ## Next Up
 

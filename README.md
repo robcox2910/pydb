@@ -50,6 +50,13 @@ drive them directly to see how each idea works:
 > rather than restored on restart. Without `journal=True`, nothing is safe
 > on disk until you call `save()`.
 
+> **Note on updates:** `Table.update()` is *copy-on-write*: it returns a new
+> `Record`, and a `Record` you fetched earlier keeps its old values, so rows
+> you are reading never change under you. Fetch the row again (`get()` or
+> `select()`) to see the new values. See
+> [docs/concepts/journal.md](docs/concepts/journal.md) for the other ways
+> every database now differs from before.
+
 ## Example
 
 ```sql
