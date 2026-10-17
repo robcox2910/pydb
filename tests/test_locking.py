@@ -23,7 +23,7 @@ from pydb import locking
 from pydb.database import Database, DatabaseError
 from pydb.durable import RecoveryError
 from pydb.executor import execute
-from pydb.locking import LOCK_FILE, DatabaseLockedError, LockType
+from pydb.locking import LOCK_FILE, DatabaseLockedError, LockType, lock_public_methods
 from pydb.record import Record, Value
 from pydb.schema import Column, Schema
 from pydb.sql_parser import parse_sql
@@ -244,6 +244,43 @@ class TestSameThread:
         txn.rollback()  # a harmless no-op, and no double release
         assert _lock_is_free(db.lock)
 
+    def test_property_setters_are_kept_and_locked(self) -> None:
+        """``lock_public_methods`` keeps a property's setter and deleter, locked too."""
+
+        @lock_public_methods
+        class Box:
+            """A tiny Lockable with a settable, deletable property."""
+
+            def __init__(self) -> None:
+                """Start empty."""
+                self.lock = threading.RLock()
+                self.seen: list[bool] = []
+                self._value = 0
+
+            @property
+            def value(self) -> int:
+                """Return the value."""
+                return self._value
+
+            @value.setter
+            def value(self, new: int) -> None:
+                """Set the value, noting whether the lock was held."""
+                self.seen.append(self.lock._is_owned())  # type: ignore[attr-defined]
+                self._value = new
+
+            @value.deleter
+            def value(self) -> None:
+                """Reset the value, noting whether the lock was held."""
+                self.seen.append(self.lock._is_owned())  # type: ignore[attr-defined]
+                self._value = 0
+
+        box = Box()
+        box.value = POWER
+        assert box.value == POWER
+        del box.value
+        assert box.value == 0
+        assert box.seen == [True, True]
+
     def test_tables_share_the_database_lock(self, tmp_path: Path) -> None:
         """Adopted tables use the database's lock; a free-standing table has its own."""
         db = _bank(tmp_path, journal=False)
@@ -260,6 +297,24 @@ def _fail_inside_transaction(db: Database) -> None:
         txn.get_table("accounts").update(FIRST_ID, {"balance": 0})
         msg = "boom"
         raise ValueError(msg)
+
+
+class TestOtherThreadFinish:
+    """A transaction must be finished by the thread that opened it."""
+
+    def test_commit_or_rollback_from_another_thread_raises(self, tmp_path: Path) -> None:
+        """Another thread gets TransactionError, and the owner can still finish."""
+        db = _bank(tmp_path, journal=False)
+        txn = Transaction(db)
+        txn.get_table("accounts").update(FIRST_ID, {"balance": 0})
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            for finish in (txn.commit, txn.rollback):
+                with pytest.raises(TransactionError, match="thread"):
+                    pool.submit(finish).result(WAIT)
+        assert txn.is_active
+        txn.commit()
+        assert db.get_table("accounts").get(FIRST_ID)["balance"] == 0
+        assert _lock_is_free(db.lock)
 
 
 class TestTransactionContextManager:
@@ -415,6 +470,47 @@ class TestLockFile:
         """Without a journal there is no LOCK file."""
         with _bank(tmp_path, journal=False):
             assert not (tmp_path / LOCK_FILE).exists()
+
+
+_GC_INSIDE_GUARD = textwrap.dedent(
+    """
+    import faulthandler, gc, pathlib, sys
+    faulthandler.dump_traceback_later(5, exit=True)  # a deadlock fails fast
+    from pydb import locking
+    from pydb.database import Database
+    from pydb.schema import Column, Schema
+    from pydb.types import DataType
+    root = pathlib.Path(sys.argv[1])
+    gc.disable()
+    db = Database(root / "a", journal=True)
+    db.create_table("t", Schema(columns=[Column("x", DataType.INTEGER)]))
+    db = None  # forgotten: only the cyclic garbage collector can free it
+    real_mkdir = pathlib.Path.mkdir
+    def mkdir(self, *args, **kwargs):
+        if locking._open_here_guard.locked():  # collect while the guard is held
+            gc.collect()
+        return real_mkdir(self, *args, **kwargs)
+    pathlib.Path.mkdir = mkdir
+    Database(root / "b", journal=True).close()
+    print("ok", (root / "a" / "LOCK").exists())
+    """
+)
+
+
+class TestGarbageCollection:
+    """A forgotten Database's finalizer may run anywhere -- even mid-acquire."""
+
+    def test_collection_inside_the_guard_does_not_deadlock(self, tmp_path: Path) -> None:
+        """Freeing a forgotten Database while the open-folder guard is held is safe."""
+        result = subprocess.run(
+            [sys.executable, "-c", _GC_INSIDE_GUARD, str(tmp_path)],
+            check=False,
+            timeout=CHILD_TIMEOUT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "ok False\n"
 
 
 class TestClose:

@@ -24,6 +24,7 @@ transaction in the thread that started it, or use it as a context manager::
         txn.get_table("cards").insert({"name": "Pikachu"})
 """
 
+import threading
 from dataclasses import dataclass
 from types import TracebackType
 
@@ -79,6 +80,7 @@ class Transaction:
         "_finished",
         "_holding",
         "_original_table_names",
+        "_owner",
         "_snapshots",
     )
 
@@ -92,6 +94,7 @@ class Transaction:
         self._snapshots: dict[str, _TableSnapshot] = {}
         self._original_table_names: frozenset[str] = frozenset()
         database.lock.acquire()  # other threads' transactions finish first
+        self._owner = threading.get_ident()
         self._holding = True
         try:
             database.begin_batch()
@@ -127,6 +130,16 @@ class Transaction:
             self.commit()
         else:
             self.rollback()
+
+    def _check_owner(self) -> None:
+        """Raise unless called by the thread that opened the transaction.
+
+        The database's lock belongs to that thread, so only it can hand
+        the lock back; another thread is refused and nothing changes.
+        """
+        if threading.get_ident() != self._owner:
+            msg = "A transaction must be committed or rolled back by the thread that opened it"
+            raise TransactionError(msg)
 
     def _release(self) -> None:
         """Hand the database's lock back (only once)."""
@@ -178,10 +191,12 @@ class Transaction:
         it.
 
         Raises:
-            TransactionError: If the transaction is already finished.
+            TransactionError: If the transaction is already finished, or
+                this is not the thread that opened it.
 
         """
         self._check_active()
+        self._check_owner()
         try:
             self._database.commit_batch()
         except BaseException:
@@ -207,12 +222,13 @@ class Transaction:
 
         Raises:
             TransactionError: If the transaction was committed or already
-                rolled back.
+                rolled back, or this is not the thread that opened it.
 
         """
         if self._commit_failed:
             return
         self._check_active()
+        self._check_owner()
         try:
             self._restore()
         finally:

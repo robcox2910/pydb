@@ -44,7 +44,9 @@ LockType = threading.RLock
 
 # Folders with an open journalled Database in *this* process.
 _open_here: set[Path] = set()
-_open_here_guard = threading.Lock()
+# Re-entrant: a forgotten Database's finalizer (LockFile.release) can run
+# during garbage collection *inside* a guarded block of this same thread.
+_open_here_guard = threading.RLock()
 
 
 class DatabaseLockedError(PyDBError):
@@ -99,8 +101,17 @@ def lock_public_methods[C: type](cls: C) -> C:
             continue
         if isinstance(member, FunctionType):
             setattr(cls, name, locked(member))
-        elif isinstance(member, property) and member.fget is not None:
-            setattr(cls, name, property(locked(member.fget), doc=member.__doc__))
+        elif isinstance(member, property):
+            setattr(
+                cls,
+                name,
+                property(
+                    member.fget and locked(member.fget),
+                    member.fset and locked(member.fset),
+                    member.fdel and locked(member.fdel),
+                    member.__doc__,
+                ),
+            )
     return cls
 
 
@@ -198,7 +209,11 @@ class LockFile:
         # Our own PID here means a Database in this process was never closed
         # (it isn't in the open set), so nobody is really holding it.
         if pid != os.getpid() and _pid_alive(pid):
-            msg = f"{self._folder} is in use by process {pid}"
+            msg = (
+                f"{self._folder} is in use by process {pid}. If that program isn't "
+                "using the database (after a crash its process ID can be reused by "
+                f"another program), delete {self._path} and try again"
+            )
             raise DatabaseLockedError(msg)
         self._path.unlink(missing_ok=True)
 

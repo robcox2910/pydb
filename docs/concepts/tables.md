@@ -49,7 +49,11 @@ all_cards = table.select()  # returns [Record(...), Record(...)]
 strong = table.select(where=lambda row: row["power"] > 50)
 
 # Update -- change Pikachu's power
-table.update(record_id=1, values={"power": 60})
+pikachu = table.get(1)
+updated = table.update(record_id=1, values={"power": 60})
+# update() hands back a *new* Record: one you fetched earlier keeps its
+# old values, like a photo of the card taken before the change.
+print(pikachu["power"], updated["power"])  # 55 60
 
 # Delete -- remove a record
 table.delete(record_id=2)

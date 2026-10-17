@@ -302,12 +302,15 @@ class Table:
         keep their current values. The schema validates the new values.
         All affected indexes are updated.
 
+        This returns a new ``Record``; Records you fetched earlier keep
+        their old values (so rows you are reading never change under you).
+
         Args:
             record_id: The ID of the record to update.
             values: Column-name-to-value mapping of fields to change.
 
         Returns:
-            The updated record.
+            The updated record (a new ``Record`` object).
 
         Raises:
             RecordNotFoundError: If no record with that ID exists.
