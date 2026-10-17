@@ -37,6 +37,16 @@ def _cards_schema() -> Schema:
     )
 
 
+def abandon(db: Database) -> None:
+    """Let go of a journalled database without closing it, as if its program died.
+
+    Nothing is checkpointed: the journal and the ``LOCK`` file are simply
+    released, so the test can reopen the folder in this same process.
+    """
+    if db._release_store is not None:
+        db._release_store()
+
+
 def commit_rows(folder: Path, count: int) -> None:
     """Commit *count* rows one by one, then crash."""
     db = Database(folder, journal=True)

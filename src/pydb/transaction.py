@@ -10,15 +10,26 @@ bundle instead of committing it straight away. ``commit()`` hands the whole
 bundle to the database's commit listeners in one go; ``rollback()`` throws
 it away. If a listener fails during ``commit()``, the transaction rolls back
 and the error is passed on -- so a commit is either fully done or not at
-all. Only one transaction at a time may be open on a database.
+all.
+
+A transaction also holds the database's lock (see ``pydb.locking``) from
+the moment it is created until it commits or rolls back. Another thread
+that wants the database -- to read, write or open its own transaction --
+waits its turn, so it never sees a half-finished transaction. The thread
+that opened the transaction can keep using the database normally, but
+opening a *second* transaction there raises ``TransactionError``. Finish a
+transaction in the thread that started it, or use it as a context manager::
+
+    with Transaction(db) as txn:  # commits at the end, rolls back on error
+        txn.get_table("cards").insert({"name": "Pikachu"})
 """
 
 from dataclasses import dataclass
+from types import TracebackType
 
 from pydb.database import Database, DatabaseError
 from pydb.errors import PyDBError
 from pydb.record import Record
-from pydb.schema import Schema
 from pydb.table import Table
 
 
@@ -31,16 +42,14 @@ class _TableSnapshot:
     """A frozen copy of a table's state for rollback.
 
     Args:
-        name: The table name.
-        schema: The table's schema.
+        table: The table object itself (rollback restores it in place).
         records: A copy of all records.
         next_id: The next auto-increment ID.
         indexes: ``(name, column)`` for each index.
 
     """
 
-    name: str
-    schema: Schema
+    table: Table
     records: list[Record]
     next_id: int
     indexes: list[tuple[str, str]]
@@ -49,17 +58,18 @@ class _TableSnapshot:
 class Transaction:
     """Wrap a database session with commit/rollback semantics.
 
-    On creation, snapshots every table and starts holding changes. On
-    commit, delivers the held changes as one batch and discards the
-    snapshots. On rollback, restores every table from its snapshot and
-    discards the held changes.
+    On creation, takes the database's lock, snapshots every table and
+    starts holding changes. On commit, delivers the held changes as one
+    batch and discards the snapshots. On rollback, restores every table from
+    its snapshot and discards the held changes. Either way the lock is
+    handed back -- also when a commit fails.
 
     Args:
         database: The database to transact against.
 
     Raises:
-        TransactionError: If another transaction is already open on the
-            database.
+        TransactionError: If this thread already has a transaction open on
+            the database. (A transaction in another thread is waited for.)
 
     """
 
@@ -67,6 +77,7 @@ class Transaction:
         "_commit_failed",
         "_database",
         "_finished",
+        "_holding",
         "_original_table_names",
         "_snapshots",
     )
@@ -80,11 +91,48 @@ class Transaction:
         self._commit_failed = False
         self._snapshots: dict[str, _TableSnapshot] = {}
         self._original_table_names: frozenset[str] = frozenset()
+        database.lock.acquire()  # other threads' transactions finish first
+        self._holding = True
         try:
             database.begin_batch()
         except DatabaseError as exc:
+            self._release()
             raise TransactionError(str(exc)) from exc
-        self._take_snapshots()
+        try:
+            self._take_snapshots()
+        except BaseException:
+            database.discard_batch()
+            self._finished = True
+            self._release()
+            raise
+
+    def __enter__(self) -> Transaction:
+        """Return the transaction for use in a ``with`` block."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Commit if the block finished cleanly, else roll back; errors propagate.
+
+        If the block already committed or rolled back, there is nothing left
+        to do.
+        """
+        if not self.is_active:
+            return
+        if exc is None:
+            self.commit()
+        else:
+            self.rollback()
+
+    def _release(self) -> None:
+        """Hand the database's lock back (only once)."""
+        if self._holding:
+            self._holding = False
+            self._database.lock.release()
 
     def _take_snapshots(self) -> None:
         """Snapshot every table's current state."""
@@ -95,8 +143,7 @@ class Transaction:
             # affect the snapshot.
             snapshot_records = [Record(record_id=r.record_id, data=r.data) for r in table.select()]
             self._snapshots[name] = _TableSnapshot(
-                name=name,
-                schema=table.schema,
+                table=table,
                 records=snapshot_records,
                 next_id=table.next_id,
                 indexes=table.index_definitions,
@@ -126,6 +173,10 @@ class Transaction:
         error propagates; calling ``rollback()`` afterwards is then a
         harmless no-op.
 
+        The automatic checkpoint (``Database.after_commit``) still runs
+        while the lock is held, so no other thread commits half-way through
+        it.
+
         Raises:
             TransactionError: If the transaction is already finished.
 
@@ -134,12 +185,18 @@ class Transaction:
         try:
             self._database.commit_batch()
         except BaseException:
-            self._restore()
-            self._commit_failed = True
+            try:
+                self._restore()
+            finally:
+                self._commit_failed = True
+                self._release()
             raise
         self._finished = True
         self._snapshots.clear()
-        self._database.after_commit()  # outside the try: this commit is final
+        try:
+            self._database.after_commit()  # outside the undo: this commit is final
+        finally:
+            self._release()
 
     def rollback(self) -> None:
         """Roll back the transaction -- undo all changes.
@@ -156,22 +213,20 @@ class Transaction:
         if self._commit_failed:
             return
         self._check_active()
-        self._restore()
+        try:
+            self._restore()
+        finally:
+            self._release()
 
     def _restore(self) -> None:
         """Put every table back as it was at the start and end the transaction."""
         self._finished = True
 
-        # Restore snapshotted tables.
+        # Restore snapshotted tables in place, so a reader holding one of
+        # these Table objects never sees the rolled-back work.
         for snapshot in self._snapshots.values():
-            restored = Table.from_stored(
-                name=snapshot.name,
-                schema=snapshot.schema,
-                records=snapshot.records,
-                next_id=snapshot.next_id,
-                indexes=snapshot.indexes,
-            )
-            self._database.replace_table(restored)
+            snapshot.table.restore(snapshot.records, snapshot.next_id, snapshot.indexes)
+            self._database.replace_table(snapshot.table)
 
         # Remove tables created during the transaction. The batch is still
         # open, so these drops are held -- and then thrown away below.

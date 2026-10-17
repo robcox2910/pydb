@@ -16,18 +16,26 @@ A *journalled* database (``Database(path, journal=True)``) also writes each
 commit to ``journal.log`` before the commit counts, so committed work
 survives a crash even without ``save()``. On opening, it rebuilds itself
 from the folder, and now and then it takes a *checkpoint* so the journal
-stays short (see ``pydb.durable`` and ``pydb.checkpoint``).
+stays short (see ``pydb.durable`` and ``pydb.checkpoint``). It also keeps
+a ``LOCK`` file so a second program can't open the same folder.
+
+Every public method holds the database's ``lock``, which its tables share,
+so threads take turns (see ``pydb.locking`` and ``pydb.transaction``).
 """
 
 import logging
+import threading
+import weakref
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import TracebackType
 
 from pydb.changes import Change, ChangeKind, CommitListener
-from pydb.checkpoint import Checkpointer, is_journalled_folder
-from pydb.durable import JOURNAL_FILE
+from pydb.checkpoint import is_journalled_folder
+from pydb.commits import CommitRouter
+from pydb.durable_store import JournalStore
 from pydb.errors import PyDBError
-from pydb.journal import Journal
+from pydb.locking import LockType, lock_public_methods
 from pydb.query import Query
 from pydb.schema import Schema
 from pydb.storage import StorageEngine
@@ -40,6 +48,7 @@ class DatabaseError(PyDBError):
     """Raise when a database-level operation fails."""
 
 
+@lock_public_methods
 class Database:
     """Manage a collection of named tables with disk persistence.
 
@@ -54,9 +63,11 @@ class Database:
     ``checkpoint()`` (also run by ``save()``, by ``close()``, and after a
     commit that makes the journal bigger than *checkpoint_bytes*) writes the
     changed tables and starts a fresh journal. Use ``close()`` (or
-    ``with Database(...) as db:``) to finish. If one journal write fails
-    (``JournalWriteError``), every later commit is refused too until the
-    database is reopened or a ``checkpoint()`` succeeds.
+    ``with Database(...) as db:``) to finish; a closed journalled database
+    refuses changes. If one journal write fails (``JournalWriteError``),
+    every later commit is refused too until the database is reopened or a
+    ``checkpoint()`` succeeds. Only one ``Database`` -- in any program -- may
+    have a journalled folder open at a time.
 
     Args:
         path: Directory where the database stores its files.
@@ -74,19 +85,23 @@ class Database:
         RecoveryError: If the journal doesn't fit the saved tables.
         DatabaseError: If *journal* is False but the folder holds a
             journalled database.
+        DatabaseLockedError: If another program (or another ``Database``
+            here) has the journalled folder open.
 
     """
 
     __slots__ = (
-        "_batch",
+        "__weakref__",
         "_checkpoint_bytes",
-        "_checkpointer",
+        "_closed",
+        "_commits",
         "_crash_after",
         "_dropped",
-        "_journal",
-        "_listeners",
+        "_lock",
         "_path",
+        "_release_store",
         "_storage",
+        "_store",
         "_tables",
         "_views",
     )
@@ -110,19 +125,49 @@ class Database:
         self._views: dict[str, Query] = {}
         # Tables dropped since the last save -- their files go on save().
         self._dropped: set[str] = set()
-        self._listeners: list[CommitListener] = []
-        # Changes waiting for the active transaction to commit (None = no transaction).
-        self._batch: list[Change] | None = None
+        self._commits = CommitRouter()
         self._checkpoint_bytes = checkpoint_bytes
-        self._journal: Journal | None = None
-        self._checkpointer: Checkpointer | None = None
+        self._lock: LockType = threading.RLock()
+        self._store: JournalStore | None = None
+        self._closed = False
+        self._release_store: Callable[[], object] | None = None
         # Test hook: a checkpoint step after which the process dies (see pydb.checkpoint).
         self._crash_after: str | None = None
         if journal:
-            self._journal = Journal(self._path / JOURNAL_FILE, sync=sync)
-            self._checkpointer = Checkpointer(self._path, self._journal)
-            for table in self._checkpointer.recover(repair=repair).values():
+            store = JournalStore(self._path, sync=sync)
+            try:
+                tables = store.recover(repair=repair)
+            except BaseException:
+                store.close()
+                raise
+            self._store = store
+            # Forgotten without close()? Let go of the journal and LOCK anyway.
+            self._release_store = weakref.finalize(self, store.close)
+            for table in tables.values():
                 self._adopt(table)
+
+    @property
+    def lock(self) -> LockType:
+        """Return the re-entrant lock every public method (and every table) holds.
+
+        Hold it yourself to make several calls in a row as one turn::
+
+            with db.lock:
+                rows = db.get_table("cards").select()
+        """
+        return self._lock
+
+    def _live_store(self) -> JournalStore | None:
+        """Return the journal store (None without a journal).
+
+        Raises:
+            DatabaseError: If the journalled database has been closed.
+
+        """
+        if self._closed:
+            msg = "The database is closed; open it again to make changes"
+            raise DatabaseError(msg)
+        return self._store
 
     def __enter__(self) -> Database:
         """Return the database for use in a ``with`` block."""
@@ -148,18 +193,23 @@ class Database:
             logger.exception("closing checkpoint failed while handling another error")
 
     def close(self) -> None:
-        """Take a checkpoint and release the journal (does nothing without one).
+        """Take a checkpoint, release the journal and delete ``LOCK``.
 
-        Inside an open transaction the checkpoint is skipped: the committed
-        work is already safe in the journal.
+        Does nothing without a journal, or when already closed. Inside an
+        open transaction the checkpoint is skipped: the committed work is
+        already safe in the journal.
         """
-        if self._journal is None:
+        store = self._store
+        if store is None:
             return
         try:
-            if self._batch is None:
+            if not self._commits.batching:
                 self.checkpoint()
         finally:
-            self._journal.close()
+            self._store = None
+            self._closed = True
+            if self._release_store is not None:
+                self._release_store()  # runs store.close() exactly once
 
     def checkpoint(self) -> None:
         """Write every table changed since the last checkpoint, then start a fresh journal.
@@ -171,16 +221,18 @@ class Database:
         are deleted.
 
         Raises:
-            DatabaseError: Without a journal, or inside an open transaction.
+            DatabaseError: Without a journal, once closed, or inside an open
+                transaction.
 
         """
-        if self._checkpointer is None:
+        store = self._live_store()
+        if store is None:
             msg = "checkpoint() needs a journalled database (journal=True)"
             raise DatabaseError(msg)
-        if self._batch is not None:
+        if self._commits.batching:
             msg = "Cannot checkpoint inside an open transaction"
             raise DatabaseError(msg)
-        self._checkpointer.checkpoint(self._tables, crash_after=self._crash_after)
+        store.checkpoint(self._tables, crash_after=self._crash_after)
         self._dropped.clear()
 
     def after_commit(self) -> None:
@@ -194,9 +246,9 @@ class Database:
         Inside an open transaction this does nothing.
         """
         if (
-            self._journal is None
-            or self._batch is not None
-            or self._journal.size_bytes <= self._checkpoint_bytes
+            self._store is None
+            or self._commits.batching
+            or self._store.size_bytes <= self._checkpoint_bytes
         ):
             return
         try:
@@ -212,7 +264,7 @@ class Database:
     @property
     def journalled(self) -> bool:
         """Return whether commits are written to a journal."""
-        return self._journal is not None
+        return self._store is not None
 
     def replace_table(self, table: Table) -> None:
         """Replace a table in the catalog (used by transactions for rollback).
@@ -229,61 +281,37 @@ class Database:
     # -- change recording ----------------------------------------------------
 
     def add_commit_listener(self, listener: CommitListener) -> None:
-        """Call *listener* once per commit with the list of changes committed.
+        """Call *listener* once per commit with the changes, before the commit counts.
 
-        The listener runs before the commit counts as done. If it raises,
-        the change is undone in memory and the error propagates: a single
-        change made outside a transaction is reversed, and a failing
-        ``Transaction.commit()`` rolls the transaction back. A commit with
-        no changes does not call listeners.
-
-        Listeners must treat the changes as read-only -- never mutate
-        ``Change.data``. With several listeners, they run in the order
-        added, so an earlier listener may already have seen a batch that a
-        later listener's failure then undid. On a journalled database the
-        journal write comes after every listener, so a listener may also see
-        a batch that a failed journal write then undoes.
-
-        Args:
-            listener: A function taking a list of ``Change`` notes.
-
+        If it raises, the commit is undone and the error propagates; see
+        ``pydb.commits.CommitRouter`` for the details.
         """
-        self._listeners.append(listener)
+        self._commits.add(listener)
 
     def remove_commit_listener(self, listener: CommitListener) -> None:
         """Stop calling a listener added with ``add_commit_listener``."""
-        self._listeners.remove(listener)
+        self._commits.remove(listener)
 
     def clear_commit_listeners(self) -> None:
         """Stop calling every commit listener."""
-        self._listeners.clear()
+        self._commits.clear()
 
     def _adopt(self, table: Table) -> None:
-        """Put *table* in the catalog and route its changes to this database."""
+        """Put *table* in the catalog, sharing this database's lock and recording."""
+        table.share_lock(self._lock)
         table.set_sink(self._on_change, after=self.after_commit)
         self._tables[table.name] = table
 
     def _on_change(self, change: Change) -> None:
         """Commit *change* now, or keep it for the active transaction."""
-        if self._batch is not None:
-            self._batch.append(change)
-        else:
-            self._commit([change])
+        if not self._commits.batching:  # (a held change is checked at commit)
+            self._live_store()  # a closed journalled database refuses changes
+        self._commits.route(change, self._write_journal)
 
-    def _commit(self, changes: list[Change]) -> None:
-        """Deliver one commit's changes to every listener, then to the journal.
-
-        The journal goes last: once its entry is written the commit is
-        final, so nothing that runs afterwards can fail and undo a commit
-        that is already on disk. A failing append (``JournalWriteError``)
-        undoes the commit like any other failing listener.
-        """
-        if not changes:
-            return
-        for listener in list(self._listeners):
-            listener(list(changes))
-        if self._journal is not None and self._checkpointer is not None:
-            self._checkpointer.committed(self._journal.append(changes), changes)
+    def _write_journal(self, changes: Sequence[Change]) -> None:
+        """Append a commit to the journal, if any: the commit point (runs last)."""
+        if self._store is not None:
+            self._store.record(changes)
 
     def begin_batch(self) -> None:
         """Start holding changes for a transaction (called by ``Transaction``).
@@ -292,23 +320,19 @@ class Database:
             DatabaseError: If a transaction is already holding changes.
 
         """
-        if self._batch is not None:
+        if self._commits.batching:
             msg = "Another transaction is already active on this database"
             raise DatabaseError(msg)
-        self._batch = []
+        self._commits.begin()
 
     def commit_batch(self) -> None:
-        """Deliver the held changes as one commit, then stop holding (``Transaction``).
-
-        If a listener raises, the batch stays open so the transaction can
-        roll back (its undo steps are held and thrown away, not committed).
-        """
-        self._commit(self._batch or [])
-        self._batch = None
+        """Deliver the held changes as one commit, then stop holding (``Transaction``)."""
+        self._live_store()
+        self._commits.finish(self._write_journal)
 
     def discard_batch(self) -> None:
         """Throw away the held changes and stop holding (``Transaction.rollback``)."""
-        self._batch = None
+        self._commits.discard()
 
     def create_table(self, name: str, schema: Schema) -> Table:
         """Create a new table in the database.
@@ -445,11 +469,11 @@ class Database:
         On a journalled database this takes a ``checkpoint()`` instead
         (every commit is already safe in the journal).
         """
-        if self._journal is not None:
+        if self._live_store() is not None:
             self.checkpoint()
             return
         for table in self._tables.values():
-            self._save_one(table)
+            self._storage.save_table_object(table)
         for name in self._dropped:
             if name not in self._tables and self._storage.table_exists(name):
                 self._storage.delete_table(name)
@@ -466,21 +490,10 @@ class Database:
 
         """
         table = self.get_table(name)
-        if self._journal is None:
-            self._save_one(table)
+        if self._live_store() is None:
+            self._storage.save_table_object(table)
         else:
             self.checkpoint()
-
-    def _save_one(self, table: Table) -> None:
-        """Save a single table through the storage engine."""
-        records = table.select()
-        self._storage.save_table(
-            name=table.name,
-            schema=table.schema,
-            records=records,
-            next_id=table.next_id,
-            indexes=table.index_definitions,
-        )
 
     def load(self) -> None:
         """Load all tables from disk into memory.
@@ -491,11 +504,11 @@ class Database:
         loaded everything, and the files on disk may be older than the
         journal.
         """
-        if self._journal is not None:
+        if self._live_store() is not None:
             return
         self._dropped.clear()
         for name in self._storage.list_tables():
-            self._load_one(name)
+            self._adopt(self._storage.load_table_object(name))
 
     def load_table(self, name: str) -> Table:
         """Load a single table from disk into memory.
@@ -514,19 +527,8 @@ class Database:
                 journalled, no such table exists).
 
         """
-        if self._journal is not None:
+        if self._live_store() is not None:
             return self.get_table(name)
-        return self._load_one(name)
-
-    def _load_one(self, name: str) -> Table:
-        """Load a single table from the storage engine."""
-        stored = self._storage.load_stored_table(name)
-        table = Table.from_stored(
-            name=stored.name,
-            schema=stored.schema,
-            records=stored.records,
-            next_id=stored.next_id,
-            indexes=stored.indexes,
-        )
+        table = self._storage.load_table_object(name)
         self._adopt(table)
         return table

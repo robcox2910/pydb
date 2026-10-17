@@ -18,6 +18,7 @@ from pydb.schema import Column, Schema
 from pydb.sql_parser import parse_sql
 from pydb.transaction import Transaction
 from pydb.types import DataType
+from tests.crash_helpers import abandon
 
 _CRASH_ROWS = 25
 _TXN_ROWS = 4
@@ -76,7 +77,7 @@ class TestDurableCommits:
         """Reopen after dropping the object and see the committed row."""
         db = _open(tmp_path)
         db.create_table("cards", _schema()).insert({"name": "Pikachu", "power": _POWER})
-        del db
+        abandon(db)
         again = _open(tmp_path)
         assert _rows(again, "cards") == [(_FIRST_ID, {"name": "Pikachu", "power": _POWER})]
 
@@ -95,7 +96,7 @@ class TestDurableCommits:
         cards.insert({"name": "A", "power": 1})
         cards.insert({"name": "B", "power": 2})
         txn.commit()
-        del db
+        abandon(db)
         entries = Journal(tmp_path / JOURNAL_FILE).read()
         assert len(entries) == _TWO_ENTRIES
         assert [c.kind for c in entries[1][1]] == [ChangeKind.INSERT, ChangeKind.INSERT]
@@ -261,7 +262,7 @@ class TestDamagedJournal:
         cards = db.create_table("cards", _schema())
         cards.insert({"name": "A", "power": 1})
         cards.insert({"name": "B", "power": 2})
-        del db
+        abandon(db)
         path = tmp_path / JOURNAL_FILE
         lines = path.read_bytes().split(b"\n")
         lines[1] = lines[1].replace(b"A", b"Z")

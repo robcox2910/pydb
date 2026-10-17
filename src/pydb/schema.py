@@ -6,12 +6,12 @@ that says "every card must have a Name (text), a Type (text), and a Power
 record before letting it in.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
 from pydb.errors import SchemaError
-from pydb.record import Value
+from pydb.record import Record, Value
 from pydb.types import DataType, check_value
 
 
@@ -135,6 +135,46 @@ class Schema:
             except SchemaError as exc:
                 msg = f"Column {col_name!r} {exc}"
                 raise SchemaError(msg) from exc
+
+    def check_constraints(
+        self,
+        values: Mapping[str, Value],
+        records: Collection[Record],
+        exclude_record_id: int | None = None,
+    ) -> None:
+        """Check NOT NULL, UNIQUE, and PRIMARY KEY constraints against a table's rows.
+
+        Args:
+            values: The column values to check.
+            records: The rows already in the table.
+            exclude_record_id: A record ID to exclude from uniqueness
+                checks (used during UPDATE so the record doesn't
+                conflict with itself).
+
+        Raises:
+            SchemaError: If any constraint is violated.
+
+        """
+        for col in self._columns:
+            if not (col.primary_key or col.not_null or col.unique):
+                continue
+
+            val = values.get(col.name)
+
+            # NOT NULL / PRIMARY KEY: value must be present.
+            if (col.not_null or col.primary_key) and val is None:
+                msg = f"Column {col.name!r} cannot be NULL"
+                raise SchemaError(msg)
+
+            # UNIQUE / PRIMARY KEY: no duplicate values.
+            if (col.unique or col.primary_key) and val is not None:
+                for record in records:
+                    if exclude_record_id is not None and record.record_id == exclude_record_id:
+                        continue
+                    if record[col.name] == val:
+                        constraint = "PRIMARY KEY" if col.primary_key else "UNIQUE"
+                        msg = f"{constraint} violation: {col.name!r} value {val!r} already exists"
+                        raise SchemaError(msg)
 
     def __repr__(self) -> str:
         """Return a developer-friendly string representation."""

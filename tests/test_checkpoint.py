@@ -14,11 +14,12 @@ from pydb.checkpoint import CHECKPOINT_FILE, SNAPSHOT_DIR, Checkpointer
 from pydb.database import Database, DatabaseError
 from pydb.durable import JOURNAL_FILE, RecoveryError
 from pydb.journal import Journal, JournalWriteError
+from pydb.locking import LOCK_FILE
 from pydb.record import Value
 from pydb.schema import Column, Schema
 from pydb.transaction import Transaction
 from pydb.types import DataType
-from tests.crash_helpers import checkpoint_workload
+from tests.crash_helpers import abandon, checkpoint_workload
 
 _CHILD_TIMEOUT = 5
 _CRASH_EXIT = 1
@@ -102,7 +103,7 @@ class TestCheckpoint:
         cards.delete(_SECOND_ID)
         cards.insert({"name": "late", "power": 0})
         expected = _state(db)
-        del db
+        abandon(db)
         again = _open(tmp_path)
         assert _state(again) == expected
         assert Journal(tmp_path / JOURNAL_FILE).last_lsn == _ROWS + 1 + _THREE_ROWS
@@ -130,6 +131,7 @@ class TestCheckpoint:
         assert db._dropped == set()
         assert _tables(tmp_path) == []
         assert _snapshot_files(tmp_path) == set()
+        abandon(db)
         assert _open(tmp_path).table_names() == []
 
     def test_nothing_new_writes_nothing(self, tmp_path: Path) -> None:
@@ -180,6 +182,7 @@ class TestAutoCheckpoint:
         _fill(db, _TWO_ROWS)
         assert _checkpoint_json(tmp_path)["lsn"] == _TWO_ROWS + 1
         assert Journal(tmp_path / JOURNAL_FILE).read() == []
+        abandon(db)
         assert len(_state(_open(tmp_path))["cards"][0]) == _TWO_ROWS
 
     def test_transaction_commit_auto_checkpoints(self, tmp_path: Path) -> None:
@@ -209,7 +212,7 @@ class TestAutoCheckpoint:
         assert "No space" in caplog.text
         assert db.get_table("cards").row_count == 1
         monkeypatch.undo()
-        del db
+        abandon(db)
         assert len(_state(_open(tmp_path))["cards"][0]) == 1
 
 
@@ -243,7 +246,7 @@ class TestInterruptedAutoCheckpoint:
             cards.insert({"name": "C", "power": 3})
         assert cards.row_count == _THREE_ROWS
         assert cards.next_id == _THREE_ROWS + 1
-        del db
+        abandon(db)
         again = self._reopen(tmp_path, monkeypatch)
         assert again.get_table("cards").row_count == _THREE_ROWS
         assert again.get_table("cards").insert({"name": "D", "power": 4}).record_id == (
@@ -259,7 +262,7 @@ class TestInterruptedAutoCheckpoint:
         with pytest.raises(KeyboardInterrupt):
             cards.delete(_FIRST_ID)
         assert [r.record_id for r in cards.select()] == [_SECOND_ID]
-        del db
+        abandon(db)
         again = self._reopen(tmp_path, monkeypatch)
         assert [r.record_id for r in again.get_table("cards").select()] == [_SECOND_ID]
 
@@ -274,7 +277,7 @@ class TestInterruptedAutoCheckpoint:
             txn.commit()
         assert not txn.is_active
         assert db.get_table("cards").row_count == _THREE_ROWS
-        del db
+        abandon(db)
         again = self._reopen(tmp_path, monkeypatch)
         assert again.get_table("cards").row_count == _THREE_ROWS
 
@@ -286,7 +289,7 @@ class TestInterruptedAutoCheckpoint:
         with pytest.raises(KeyboardInterrupt):
             db.create_table("more", _schema())
         assert "more" in db.table_names()
-        del db
+        abandon(db)
         assert "more" in self._reopen(tmp_path, monkeypatch).table_names()
 
     def test_any_exception_is_logged_and_the_commit_stands(
@@ -305,7 +308,7 @@ class TestInterruptedAutoCheckpoint:
         with caplog.at_level(logging.WARNING, logger="pydb.database"):
             db.get_table("cards").delete(_FIRST_ID)
         assert "unexpected" in caplog.text
-        del db
+        abandon(db)
         rows = _state(self._reopen(tmp_path, monkeypatch))["cards"][0]
         assert [rid for rid, _ in rows] == [_SECOND_ID]
 
@@ -313,15 +316,20 @@ class TestInterruptedAutoCheckpoint:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Log a failing closing checkpoint rather than hide the block's error."""
-        db = _open(tmp_path)
+        db = _open(tmp_path / "failing")
         db.create_table("cards", _schema())
+        clean = _open(tmp_path / "clean")
+        clean.create_table("cards", _schema())
         monkeypatch.setattr(Checkpointer, "checkpoint", _broken_disk)
         failure = ZeroDivisionError("the block failed")
         with caplog.at_level(logging.WARNING, logger="pydb.database"):
             db.__exit__(ZeroDivisionError, failure, None)
         assert "No space" in caplog.text
         with pytest.raises(OSError, match="No space"):
-            db.__exit__(None, None, None)
+            clean.__exit__(None, None, None)
+        # Either way the database is closed and its LOCK is gone.
+        assert not (tmp_path / "failing" / LOCK_FILE).exists()
+        assert not (tmp_path / "clean" / LOCK_FILE).exists()
 
 
 def _broken_disk(*_args: object, **_kwargs: object) -> None:
@@ -368,7 +376,7 @@ class TestRecoveryFromCheckpoint:
         (tmp_path / JOURNAL_FILE).unlink()
         db = _open(tmp_path)
         db.get_table("cards").insert({"name": "C", "power": 3})
-        del db
+        abandon(db)
         assert len(_state(_open(tmp_path))["cards"][0]) == _THREE_ROWS
 
     def test_journal_starting_after_the_checkpoint_is_an_error(self, tmp_path: Path) -> None:
@@ -427,7 +435,7 @@ class TestJournalModeSafety:
             cards.insert({"name": "refused", "power": 0})
         db.checkpoint()
         cards.insert({"name": "kept", "power": 1})
-        del db
+        abandon(db)
         rows = _state(_open(tmp_path))["cards"][0]
         assert rows == [(_FIRST_ID, {"name": "kept", "power": 1})]
 
@@ -449,7 +457,7 @@ class TestJournalModeSafety:
         monkeypatch.undo()
         db.checkpoint()
         cards.insert({"name": "kept", "power": 1})
-        del db
+        abandon(db)
         assert len(_state(_open(tmp_path))["cards"][0]) == 1
 
 

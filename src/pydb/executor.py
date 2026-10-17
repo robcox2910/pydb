@@ -224,28 +224,29 @@ def execute(query_or_stmt: Query | Statement, database: Database) -> ExecuteResu
         QueryError: If the operation fails.
 
     """
-    if isinstance(query_or_stmt, Query):
-        return _execute_select(query_or_stmt, database)
-    if isinstance(query_or_stmt, CreateTableStatement):
-        return _execute_create_table(query_or_stmt, database)
-    if isinstance(query_or_stmt, DropTableStatement):
-        return _execute_drop_table(query_or_stmt, database)
-    if isinstance(query_or_stmt, InsertStatement):
-        return _execute_insert(query_or_stmt, database)
-    if isinstance(query_or_stmt, UpdateStatement):
-        return _execute_update(query_or_stmt, database)
-    if isinstance(query_or_stmt, DeleteStatement):
-        return _execute_delete(query_or_stmt, database)
-    if isinstance(query_or_stmt, CreateIndexStatement):
-        return _execute_create_index(query_or_stmt, database)
-    if isinstance(query_or_stmt, DropIndexStatement):
-        return _execute_drop_index(query_or_stmt, database)
-    if isinstance(query_or_stmt, ExplainStatement):
-        return _execute_explain(query_or_stmt, database)
-    if isinstance(query_or_stmt, CreateViewStatement):
-        return _execute_create_view(query_or_stmt, database)
-    # Must be DropViewStatement (type narrowing guarantees this).
-    return _execute_drop_view(query_or_stmt, database)
+    with database.lock:  # one statement is one turn: no writer runs half-way through it
+        if isinstance(query_or_stmt, Query):
+            return _execute_select(query_or_stmt, database)
+        if isinstance(query_or_stmt, CreateTableStatement):
+            return _execute_create_table(query_or_stmt, database)
+        if isinstance(query_or_stmt, DropTableStatement):
+            return _execute_drop_table(query_or_stmt, database)
+        if isinstance(query_or_stmt, InsertStatement):
+            return _execute_insert(query_or_stmt, database)
+        if isinstance(query_or_stmt, UpdateStatement):
+            return _execute_update(query_or_stmt, database)
+        if isinstance(query_or_stmt, DeleteStatement):
+            return _execute_delete(query_or_stmt, database)
+        if isinstance(query_or_stmt, CreateIndexStatement):
+            return _execute_create_index(query_or_stmt, database)
+        if isinstance(query_or_stmt, DropIndexStatement):
+            return _execute_drop_index(query_or_stmt, database)
+        if isinstance(query_or_stmt, ExplainStatement):
+            return _execute_explain(query_or_stmt, database)
+        if isinstance(query_or_stmt, CreateViewStatement):
+            return _execute_create_view(query_or_stmt, database)
+        # Must be DropViewStatement (type narrowing guarantees this).
+        return _execute_drop_view(query_or_stmt, database)
 
 
 # ---------------------------------------------------------------------------

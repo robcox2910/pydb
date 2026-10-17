@@ -21,6 +21,7 @@ from pydb.serializer import (
     deserialize_table,
     serialize_table_data,
 )
+from pydb.table import Table
 
 
 class StorageError(PyDBError):
@@ -157,6 +158,27 @@ class StorageEngine:
         except OSError as exc:
             msg = f"Failed to delete table {name!r}: {exc}"
             raise StorageError(msg) from exc
+
+    def save_table_object(self, table: Table) -> None:
+        """Save a ``Table`` (rows, next ID and index definitions)."""
+        self.save_table(
+            name=table.name,
+            schema=table.schema,
+            records=table.select(),
+            next_id=table.next_id,
+            indexes=table.index_definitions,
+        )
+
+    def load_table_object(self, name: str) -> Table:
+        """Load a table's file as a ``Table`` that belongs to no database yet."""
+        stored = self.load_stored_table(name)
+        return Table.from_stored(
+            name=stored.name,
+            schema=stored.schema,
+            records=stored.records,
+            next_id=stored.next_id,
+            indexes=stored.indexes,
+        )
 
     def table_exists(self, name: str) -> bool:
         """Check whether a data file exists for the given table name."""
