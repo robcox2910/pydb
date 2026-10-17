@@ -22,6 +22,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 
 from pydb.changes import Change, ChangeKind, ChangeSink
+from pydb.commits import is_committed
 from pydb.errors import PyDBError, RecordNotFoundError
 from pydb.index import Index
 from pydb.locking import LockType, lock_public_methods
@@ -379,6 +380,9 @@ class Table:
     def _emit(self, change: Change, *, undo: Change) -> None:
         """Hand *change* to the sink; if the sink fails, apply *undo* and re-raise.
 
+        An exception marked ``is_committed`` (it came after the change was
+        already durable) is passed on without undoing anything.
+
         Args:
             change: The note describing the change just made in memory.
             undo: The opposite change, which puts memory back as it was.
@@ -388,7 +392,9 @@ class Table:
             return
         try:
             self._sink(change)
-        except BaseException:
+        except BaseException as exc:
+            if is_committed(exc):  # already in the journal: it stands
+                raise
             self._apply_change(undo)
             if change.kind is ChangeKind.INSERT and change.record_id is not None:
                 # Hand back the ID number the failed insert used up.

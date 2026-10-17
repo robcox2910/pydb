@@ -49,8 +49,19 @@ class JournalStore:
         return self._checkpointer.recover(repair=repair)
 
     def record(self, changes: Sequence[Change]) -> None:
-        """Append one commit to the journal (this is the commit point)."""
+        """Append one commit to the journal (this is the commit point).
+
+        The tables it touches are marked for the next checkpoint *before*
+        the append, so an interrupt right after the append can't leave a
+        committed change out of the next snapshot.
+        """
+        self._checkpointer.will_commit(changes)
         self._checkpointer.committed(self._journal.append(changes), changes)
+
+    @property
+    def last_lsn(self) -> int:
+        """Return the LSN of the newest commit in the journal."""
+        return self._journal.last_lsn
 
     @property
     def size_bytes(self) -> int:

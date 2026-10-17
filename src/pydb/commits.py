@@ -8,6 +8,12 @@ rolls back, and the bundle goes in the bin.
 
 Posting a commit means handing it to every *commit listener* in turn, and
 last of all to the final step (on a journalled database, the journal).
+
+Once the journal entry is written, the commit stands -- even if an error or
+a Ctrl-C (``KeyboardInterrupt``) arrives a moment later, before the call
+returns. The database then adds ``COMMITTED_NOTE`` to that exception
+(``mark_committed``), and whoever would undo the change checks
+``is_committed`` first and leaves it alone.
 """
 
 from collections.abc import Callable, Sequence
@@ -16,6 +22,21 @@ from pydb.changes import Change, CommitListener
 
 FinalStep = Callable[[Sequence[Change]], None]
 """What runs after every listener accepted a commit (the journal write)."""
+
+COMMITTED_NOTE = "pydb: the commit had already reached the journal, so it was kept (not undone)"
+"""The note added to an exception that arrived after its commit was durable."""
+
+
+def mark_committed(exc: BaseException) -> None:
+    """Note on *exc* that its commit was already durable, so nobody undoes it."""
+    if not is_committed(exc):
+        exc.add_note(COMMITTED_NOTE)
+
+
+def is_committed(exc: BaseException) -> bool:
+    """Return whether *exc* arrived after its commit was already durable."""
+    notes: list[str] = getattr(exc, "__notes__", [])
+    return COMMITTED_NOTE in notes
 
 
 class CommitRouter:

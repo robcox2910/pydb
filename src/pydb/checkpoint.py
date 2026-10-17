@@ -191,6 +191,13 @@ class Checkpointer:
             indexes=stored.indexes,
         )
 
+    def will_commit(self, changes: Iterable[Change]) -> None:
+        """Mark the tables *changes* touch for the next snapshot (just before the append).
+
+        If the append then fails, the extra mark only costs a spare snapshot.
+        """
+        self._note(changes)
+
     def committed(self, lsn: int, changes: Iterable[Change]) -> None:
         """Remember a commit that reached the journal as entry *lsn*."""
         self._lsn = lsn
@@ -209,7 +216,7 @@ class Checkpointer:
                 this step -- ``"snapshots"``, ``"checkpoint_file"`` or ``"rotate"``.
 
         """
-        lsn = self._lsn
+        lsn = max(self._lsn, self.journal.last_lsn)  # (in case committed() was interrupted)
         if lsn == self._card.lsn and not self._dirty and not self._old_files:
             if self.journal.failed:
                 self.journal.rotate(lsn)

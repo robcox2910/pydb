@@ -4,12 +4,15 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
 
 from pydb.changes import Change, ChangeKind
+from pydb.checkpoint import Checkpointer
+from pydb.commits import COMMITTED_NOTE
 from pydb.database import Database
 from pydb.durable import JOURNAL_FILE, RecoveryError
 from pydb.executor import execute
@@ -34,6 +37,7 @@ _OTHER_POWER = 48
 _THREE_ROWS = 3
 _TWO_ROWS = 2
 _TWO_ENTRIES = 2
+_SMALL_JOURNAL = 32  # bytes: a freshly rotated journal is just its header
 _DAY = date(2026, 10, 17)
 _TS = datetime(2026, 10, 17, 12, 30, 45, tzinfo=UTC)
 _HELPER = Path(__file__).with_name("crash_helpers.py")
@@ -324,6 +328,71 @@ class TestJournalFailure:
         assert len(_rows(db, "cards")) == 1
         db.close()
         assert len(_rows(_open(tmp_path), "cards")) == 1
+
+
+def _interrupt_after_append(_self: Checkpointer, _lsn: int, _changes: object) -> None:
+    """Stand in for the bookkeeping right after a journal append: press Ctrl-C."""
+    raise KeyboardInterrupt
+
+
+class TestInterruptAfterCommitPoint:
+    """Ctrl-C landing just after the journal append never undoes the commit."""
+
+    def test_autocommit_stands(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep the row in memory, say so in a note, and in the closing checkpoint."""
+        db = _open(tmp_path)
+        cards = db.create_table("cards", _schema())
+        db.checkpoint()  # so only the interrupted commit can make "cards" dirty
+        monkeypatch.setattr(Checkpointer, "committed", _interrupt_after_append)
+        with pytest.raises(KeyboardInterrupt) as caught:
+            cards.insert({"name": "A", "power": 1})
+        monkeypatch.undo()
+        assert COMMITTED_NOTE in caught.value.__notes__
+        assert cards.row_count == 1
+        db.close()
+        assert (tmp_path / JOURNAL_FILE).stat().st_size < _SMALL_JOURNAL  # rotated away
+        assert len(_rows(_open(tmp_path), "cards")) == 1
+
+    def test_create_table_stands(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep a table whose creation reached the journal just before Ctrl-C."""
+        db = _open(tmp_path)
+        monkeypatch.setattr(Checkpointer, "committed", _interrupt_after_append)
+        with pytest.raises(KeyboardInterrupt):
+            db.create_table("cards", _schema())
+        monkeypatch.undo()
+        assert db.table_names() == ["cards"]
+        db.get_table("cards").insert({"name": "A", "power": 1})
+        abandon(db)
+        assert len(_rows(_open(tmp_path), "cards")) == 1
+
+    def test_transaction_stands(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep the committed rows, end the transaction and hand the lock back."""
+        db = _open(tmp_path)
+        db.create_table("cards", _schema())
+        txn = Transaction(db)
+        txn.get_table("cards").insert({"name": "A", "power": 1})
+        txn.get_table("cards").insert({"name": "B", "power": 2})
+        monkeypatch.setattr(Checkpointer, "committed", _interrupt_after_append)
+        with pytest.raises(KeyboardInterrupt):
+            txn.commit()
+        monkeypatch.undo()
+        assert not txn.is_active
+        assert not db.in_transaction
+        got: list[bool] = []
+
+        def take_the_lock() -> None:
+            """Take the lock from another thread (it must be free), then give it back."""
+            got.append(db.lock.acquire(timeout=_CHILD_TIMEOUT))
+            if got[-1]:
+                db.lock.release()
+
+        other = threading.Thread(target=take_the_lock)
+        other.start()
+        other.join()
+        assert got == [True]
+        assert len(_rows(db, "cards")) == _TWO_ROWS
+        abandon(db)
+        assert len(_rows(_open(tmp_path), "cards")) == _TWO_ROWS
 
 
 class TestLifecycle:

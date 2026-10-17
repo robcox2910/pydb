@@ -28,6 +28,7 @@ import threading
 from dataclasses import dataclass
 from types import TracebackType
 
+from pydb.commits import is_committed
 from pydb.database import Database, DatabaseError
 from pydb.errors import PyDBError
 from pydb.record import Record
@@ -184,7 +185,9 @@ class Transaction:
         The held changes go to the database's commit listeners as one
         batch. If a listener raises, the transaction is rolled back and the
         error propagates; calling ``rollback()`` afterwards is then a
-        harmless no-op.
+        harmless no-op. An error (or Ctrl-C) that arrives only after the
+        batch reached the journal leaves the commit standing: it propagates
+        with ``pydb.commits.COMMITTED_NOTE`` attached.
 
         The automatic checkpoint (``Database.after_commit``) still runs
         while the lock is held, so no other thread commits half-way through
@@ -199,19 +202,30 @@ class Transaction:
         self._check_owner()
         try:
             self._database.commit_batch()
-        except BaseException:
+        except BaseException as exc:
+            if is_committed(exc):  # it reached the journal just before the error
+                try:
+                    self._database.discard_batch()  # (it may not have been closed yet)
+                    self._finish_committed()
+                finally:
+                    self._release()
+                raise
             try:
                 self._restore()
             finally:
                 self._commit_failed = True
                 self._release()
             raise
-        self._finished = True
-        self._snapshots.clear()
         try:
+            self._finish_committed()
             self._database.after_commit()  # outside the undo: this commit is final
         finally:
             self._release()
+
+    def _finish_committed(self) -> None:
+        """Mark the transaction committed and drop its snapshots."""
+        self._finished = True
+        self._snapshots.clear()
 
     def rollback(self) -> None:
         """Roll back the transaction -- undo all changes.
