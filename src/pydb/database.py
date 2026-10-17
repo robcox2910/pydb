@@ -3,10 +3,19 @@
 A database is the whole room full of shelves. It knows which binders (tables)
 exist, creates new ones, drops old ones, and coordinates saving and loading
 through the storage engine.
+
+Every change -- a new table, a new row, a dropped index -- is also written
+down as a ``Change`` note (see ``pydb.changes``) and handed to the
+database's *commit listeners*, one batch per commit. Outside a transaction
+each change is its own commit; inside a ``Transaction`` the notes wait until
+``commit()``. A listener runs *before* the commit counts as done: if it
+raises, the change (or the whole transaction) is undone in memory and the
+error is passed on.
 """
 
 from pathlib import Path
 
+from pydb.changes import Change, ChangeKind, CommitListener
 from pydb.errors import PyDBError
 from pydb.query import Query
 from pydb.schema import Schema
@@ -30,7 +39,7 @@ class Database:
 
     """
 
-    __slots__ = ("_dropped", "_path", "_storage", "_tables", "_views")
+    __slots__ = ("_batch", "_dropped", "_listeners", "_path", "_storage", "_tables", "_views")
 
     def __init__(self, path: str | Path) -> None:
         """Create or open a database at the given path."""
@@ -40,6 +49,9 @@ class Database:
         self._views: dict[str, Query] = {}
         # Tables dropped since the last save -- their files go on save().
         self._dropped: set[str] = set()
+        self._listeners: list[CommitListener] = []
+        # Changes waiting for the active transaction to commit (None = no transaction).
+        self._batch: list[Change] | None = None
 
     @property
     def path(self) -> Path:
@@ -49,11 +61,83 @@ class Database:
     def replace_table(self, table: Table) -> None:
         """Replace a table in the catalog (used by transactions for rollback).
 
+        Nothing is recorded; the table is hooked up to record its own
+        future changes.
+
         Args:
             table: The table to insert or replace.
 
         """
+        self._adopt(table)
+
+    # -- change recording ----------------------------------------------------
+
+    def add_commit_listener(self, listener: CommitListener) -> None:
+        """Call *listener* once per commit with the list of changes committed.
+
+        The listener runs before the commit counts as done. If it raises,
+        the change is undone in memory and the error propagates: a single
+        change made outside a transaction is reversed, and a failing
+        ``Transaction.commit()`` rolls the transaction back. A commit with
+        no changes does not call listeners.
+
+        Args:
+            listener: A function taking a list of ``Change`` notes.
+
+        """
+        self._listeners.append(listener)
+
+    def remove_commit_listener(self, listener: CommitListener) -> None:
+        """Stop calling a listener added with ``add_commit_listener``."""
+        self._listeners.remove(listener)
+
+    def clear_commit_listeners(self) -> None:
+        """Stop calling every commit listener."""
+        self._listeners.clear()
+
+    def _adopt(self, table: Table) -> None:
+        """Put *table* in the catalog and route its changes to this database."""
+        table.set_sink(self._on_change)
         self._tables[table.name] = table
+
+    def _on_change(self, change: Change) -> None:
+        """Commit *change* now, or keep it for the active transaction."""
+        if self._batch is not None:
+            self._batch.append(change)
+        else:
+            self._commit([change])
+
+    def _commit(self, changes: list[Change]) -> None:
+        """Deliver one commit's changes to every listener (none if empty)."""
+        if not changes:
+            return
+        for listener in list(self._listeners):
+            listener(list(changes))
+
+    def begin_batch(self) -> None:
+        """Start holding changes for a transaction (called by ``Transaction``).
+
+        Raises:
+            DatabaseError: If a transaction is already holding changes.
+
+        """
+        if self._batch is not None:
+            msg = "Another transaction is already active on this database"
+            raise DatabaseError(msg)
+        self._batch = []
+
+    def commit_batch(self) -> None:
+        """Deliver the held changes as one commit, then stop holding (``Transaction``).
+
+        If a listener raises, the batch stays open so the transaction can
+        roll back (its undo steps are held and thrown away, not committed).
+        """
+        self._commit(self._batch or [])
+        self._batch = None
+
+    def discard_batch(self) -> None:
+        """Throw away the held changes and stop holding (``Transaction.rollback``)."""
+        self._batch = None
 
     def create_table(self, name: str, schema: Schema) -> Table:
         """Create a new table in the database.
@@ -73,8 +157,16 @@ class Database:
             msg = f"Table {name!r} already exists"
             raise DatabaseError(msg)
         table = Table(name=name, schema=schema)
-        self._tables[name] = table
+        self._adopt(table)
+        was_dropped = name in self._dropped
         self._dropped.discard(name)
+        try:
+            self._on_change(Change(ChangeKind.CREATE_TABLE, name, schema=schema))
+        except BaseException:
+            del self._tables[name]
+            if was_dropped:
+                self._dropped.add(name)
+            raise
         return table
 
     def get_table(self, name: str) -> Table:
@@ -113,8 +205,17 @@ class Database:
         if name not in self._tables:
             msg = f"Table {name!r} does not exist"
             raise DatabaseError(msg)
-        del self._tables[name]
+        table = self._tables.pop(name)
+        was_dropped = name in self._dropped
         self._dropped.add(name)
+        try:
+            self._on_change(Change(ChangeKind.DROP_TABLE, name))
+        except BaseException:
+            # A note can't carry a whole table, so put the very same one back.
+            self._tables[name] = table
+            if not was_dropped:
+                self._dropped.discard(name)
+            raise
 
     def table_names(self) -> list[str]:
         """Return the names of all tables in the database."""
@@ -194,6 +295,7 @@ class Database:
             schema=table.schema,
             records=records,
             next_id=table.next_id,
+            indexes=table.index_definitions,
         )
 
     def load(self) -> None:
@@ -223,12 +325,13 @@ class Database:
 
     def _load_one(self, name: str) -> Table:
         """Load a single table from the storage engine."""
-        loaded_name, schema, records, next_id = self._storage.load_table(name)
+        stored = self._storage.load_stored_table(name)
         table = Table.from_stored(
-            name=loaded_name,
-            schema=schema,
-            records=records,
-            next_id=next_id,
+            name=stored.name,
+            schema=stored.schema,
+            records=stored.records,
+            next_id=stored.next_id,
+            indexes=stored.indexes,
         )
-        self._tables[loaded_name] = table
+        self._adopt(table)
         return table

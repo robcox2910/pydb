@@ -8,13 +8,19 @@ Safety: writes use a temporary file and atomic rename so a crash mid-save
 never corrupts your data.
 """
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from pydb.atomic import atomic_write_text
 from pydb.errors import PyDBError
 from pydb.record import Record
 from pydb.schema import Schema
-from pydb.serializer import SerializationError, deserialize_table_data, serialize_table_data
+from pydb.serializer import (
+    SerializationError,
+    StoredTable,
+    deserialize_table,
+    serialize_table_data,
+)
 
 
 class StorageError(PyDBError):
@@ -57,6 +63,7 @@ class StorageEngine:
         schema: Schema,
         records: list[Record],
         next_id: int,
+        indexes: Sequence[tuple[str, str]] = (),
     ) -> None:
         """Save a table's complete state to disk.
 
@@ -69,12 +76,13 @@ class StorageEngine:
             schema: The table's schema.
             records: All records in the table.
             next_id: The next auto-increment ID.
+            indexes: ``(name, column)`` for each index on the table.
 
         Raises:
             StorageError: If the write fails.
 
         """
-        json_str = serialize_table_data(name, schema, records, next_id)
+        json_str = serialize_table_data(name, schema, records, next_id, indexes=indexes)
         try:
             atomic_write_text(self._table_path(name), json_str)
         except OSError as exc:
@@ -94,6 +102,22 @@ class StorageEngine:
             StorageError: If the file doesn't exist or is corrupted.
 
         """
+        stored = self.load_stored_table(name)
+        return stored.name, stored.schema, stored.records, stored.next_id
+
+    def load_stored_table(self, name: str) -> StoredTable:
+        """Load a table's complete state from disk, index definitions included.
+
+        Args:
+            name: The table name (used to find the file).
+
+        Returns:
+            The table's stored state.
+
+        Raises:
+            StorageError: If the file doesn't exist or is corrupted.
+
+        """
         file_path = self._table_path(name)
 
         if not file_path.exists():
@@ -107,7 +131,7 @@ class StorageEngine:
             raise StorageError(msg) from exc
 
         try:
-            return deserialize_table_data(json_str)
+            return deserialize_table(json_str)
         except SerializationError as exc:
             msg = f"Corrupted data file for table {name!r}: {exc}"
             raise StorageError(msg) from exc

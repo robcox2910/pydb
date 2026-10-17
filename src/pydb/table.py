@@ -6,10 +6,17 @@ follows the same template (schema), and each card has a unique serial number
 
 Tables can also have **indexes** -- like a card catalog that makes finding
 specific cards much faster.
+
+A table that belongs to a ``Database`` also writes a note (a ``Change``)
+after every successful change and hands it to its *sink* (see
+``pydb.changes``). If the sink refuses the note -- say the journal could not
+write it -- the table takes the change back before passing the error on, so
+memory never holds a change nobody recorded.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 
+from pydb.changes import Change, ChangeKind, ChangeSink
 from pydb.errors import PyDBError, RecordNotFoundError, SchemaError
 from pydb.index import Index
 from pydb.record import Record, Value
@@ -33,7 +40,7 @@ class Table:
 
     """
 
-    __slots__ = ("_indexes", "_name", "_next_id", "_records", "_schema")
+    __slots__ = ("_indexes", "_name", "_next_id", "_records", "_schema", "_sink")
 
     def __init__(self, name: str, schema: Schema) -> None:
         """Create a new empty table with the given name and schema."""
@@ -42,6 +49,7 @@ class Table:
         self._records: dict[int, Record] = {}
         self._next_id = 1
         self._indexes: dict[str, Index] = {}
+        self._sink: ChangeSink | None = None
 
     @property
     def name(self) -> str:
@@ -60,16 +68,19 @@ class Table:
         schema: Schema,
         records: list[Record],
         next_id: int,
+        indexes: Sequence[tuple[str, str]] = (),
     ) -> Table:
         """Reconstruct a table from stored components.
 
-        Used by the storage engine to rebuild a table loaded from disk.
+        Used by the storage engine to rebuild a table loaded from disk, and
+        by transactions to restore a snapshot. Nothing is recorded.
 
         Args:
             name: The table name.
             schema: The table schema.
             records: The records to populate the table with.
             next_id: The next auto-increment ID.
+            indexes: ``(name, column)`` pairs of indexes to rebuild.
 
         Returns:
             A fully populated table.
@@ -79,7 +90,16 @@ class Table:
         table._next_id = next_id
         for record in records:
             table._records[record.record_id] = record
+        for index_name, column in indexes:
+            table._add_index(index_name, column)
         return table
+
+    def set_sink(self, sink: ChangeSink | None) -> None:
+        """Choose the function that receives a ``Change`` after each change.
+
+        The owning ``Database`` calls this; ``None`` stops recording.
+        """
+        self._sink = sink
 
     @property
     def next_id(self) -> int:
@@ -95,6 +115,11 @@ class Table:
     def indexes(self) -> dict[str, Index]:
         """Return the table's indexes (name → Index)."""
         return dict(self._indexes)
+
+    @property
+    def index_definitions(self) -> list[tuple[str, str]]:
+        """Return ``(name, column)`` for each index, oldest first."""
+        return [(idx.name, idx.column) for idx in self._indexes.values()]
 
     def create_index(self, index_name: str, column: str) -> Index:
         """Create a new index on a column.
@@ -120,13 +145,12 @@ class Table:
             msg = f"Column {column!r} does not exist in table {self._name!r}"
             raise TableIndexError(msg)
 
-        idx = Index(name=index_name, column=column)
-
-        # Populate with existing records.
-        for record in self._records.values():
-            idx.insert(record[column], record.record_id)
-
-        self._indexes[index_name] = idx
+        idx = self._add_index(index_name, column)
+        definition = (index_name, column)
+        self._emit(
+            Change(ChangeKind.CREATE_INDEX, self._name, index=definition),
+            undo=Change(ChangeKind.DROP_INDEX, self._name, index=definition),
+        )
         return idx
 
     def drop_index(self, index_name: str) -> None:
@@ -142,7 +166,12 @@ class Table:
         if index_name not in self._indexes:
             msg = f"Index {index_name!r} does not exist on table {self._name!r}"
             raise TableIndexError(msg)
-        del self._indexes[index_name]
+        definition = (index_name, self._indexes[index_name].column)
+        self._remove_index(index_name)
+        self._emit(
+            Change(ChangeKind.DROP_INDEX, self._name, index=definition),
+            undo=Change(ChangeKind.CREATE_INDEX, self._name, index=definition),
+        )
 
     def get_index_for_column(self, column: str) -> Index | None:
         """Return an index covering the given column, if one exists."""
@@ -171,14 +200,11 @@ class Table:
         self._schema.validate(values)
         self._check_constraints(values)
         record_id = self._next_id
-        self._next_id += 1
-        record = Record(record_id=record_id, data=values)
-        self._records[record_id] = record
-
-        # Update indexes.
-        for idx in self._indexes.values():
-            idx.insert(record[idx.column], record_id)
-
+        record = self._put_record(record_id, values)
+        self._emit(
+            Change(ChangeKind.INSERT, self._name, record_id=record_id, data=record.data),
+            undo=Change(ChangeKind.DELETE, self._name, record_id=record_id),
+        )
         return record
 
     def select(
@@ -256,19 +282,18 @@ class Table:
         """
         record = self.get(record_id)
         values = self._schema.coerce(values)
+        old = record.data
         # Build the full set of values for validation.
         merged = record.data
         merged.update(values)
         self._schema.validate(merged)
         self._check_constraints(merged, exclude_record_id=record_id)
 
-        # Update indexes for changed columns.
-        for idx in self._indexes.values():
-            if idx.column in values:
-                idx.delete(record[idx.column], record_id)
-                idx.insert(values[idx.column], record_id)
-
-        record.update_fields(values)
+        self._replace_data(record_id, merged)
+        self._emit(
+            Change(ChangeKind.UPDATE, self._name, record_id=record_id, data=record.data),
+            undo=Change(ChangeKind.UPDATE, self._name, record_id=record_id, data=old),
+        )
         return record
 
     def delete(self, record_id: int) -> None:
@@ -285,13 +310,103 @@ class Table:
             msg = f"No record with id={record_id} in table {self._name!r}"
             raise RecordNotFoundError(msg)
 
-        record = self._records[record_id]
+        old = self._records[record_id].data
+        self._remove_record(record_id)
+        self._emit(
+            Change(ChangeKind.DELETE, self._name, record_id=record_id),
+            undo=Change(ChangeKind.INSERT, self._name, record_id=record_id, data=old),
+        )
 
-        # Update indexes.
+    # -- recording -----------------------------------------------------------
+
+    def _emit(self, change: Change, *, undo: Change) -> None:
+        """Hand *change* to the sink; if the sink fails, apply *undo* and re-raise.
+
+        Args:
+            change: The note describing the change just made in memory.
+            undo: The opposite change, which puts memory back as it was.
+
+        """
+        if self._sink is None:
+            return
+        try:
+            self._sink(change)
+        except BaseException:
+            self._apply_change(undo)
+            if change.kind is ChangeKind.INSERT and change.record_id is not None:
+                # Hand back the ID number the failed insert used up.
+                self._next_id = change.record_id
+            raise
+
+    def _apply_change(self, change: Change) -> None:
+        """Apply a row or index change exactly, without checks or recording.
+
+        Used to undo a change whose note was refused, and (later) to replay
+        a journal. Table-level kinds (create/drop table) belong to the
+        ``Database``.
+
+        Args:
+            change: The change to apply.
+
+        Raises:
+            PyDBError: If the change is not a complete row or index change.
+
+        """
+        match change:
+            case Change(kind=ChangeKind.INSERT, record_id=int() as rid, data=dict() as data):
+                self._put_record(rid, data)
+            case Change(kind=ChangeKind.UPDATE, record_id=int() as rid, data=dict() as data):
+                self._replace_data(rid, data)
+            case Change(kind=ChangeKind.DELETE, record_id=int() as rid):
+                self._remove_record(rid)
+            case Change(kind=ChangeKind.CREATE_INDEX, index=(index_name, column)):
+                self._add_index(index_name, column)
+            case Change(kind=ChangeKind.DROP_INDEX, index=(index_name, _)):
+                self._remove_index(index_name)
+            case _:
+                msg = f"Cannot apply {change!r} to table {self._name!r}"
+                raise PyDBError(msg)
+
+    # -- raw building blocks (no validation, no recording) -------------------
+
+    def _put_record(self, record_id: int, data: Mapping[str, Value]) -> Record:
+        """Store a record under *record_id*, keeping records in ID order."""
+        record = Record(record_id=record_id, data=data)
+        out_of_order = bool(self._records) and record_id < next(reversed(self._records))
+        self._records[record_id] = record
+        if out_of_order:
+            self._records = dict(sorted(self._records.items()))
+        self._next_id = max(self._next_id, record_id + 1)
+        for idx in self._indexes.values():
+            idx.insert(record[idx.column], record_id)
+        return record
+
+    def _replace_data(self, record_id: int, data: Mapping[str, Value]) -> None:
+        """Overwrite a record's values, moving its index entries to match."""
+        record = self._records[record_id]
+        for idx in self._indexes.values():
+            if record[idx.column] != data[idx.column]:
+                idx.delete(record[idx.column], record_id)
+                idx.insert(data[idx.column], record_id)
+        record.update_fields(data)
+
+    def _remove_record(self, record_id: int) -> None:
+        """Remove a record and its index entries."""
+        record = self._records.pop(record_id)
         for idx in self._indexes.values():
             idx.delete(record[idx.column], record_id)
 
-        del self._records[record_id]
+    def _add_index(self, index_name: str, column: str) -> Index:
+        """Build an index on *column* filled with every current record."""
+        idx = Index(name=index_name, column=column)
+        for record in self._records.values():
+            idx.insert(record[column], record.record_id)
+        self._indexes[index_name] = idx
+        return idx
+
+    def _remove_index(self, index_name: str) -> None:
+        """Forget an index."""
+        del self._indexes[index_name]
 
     def _check_constraints(
         self,
