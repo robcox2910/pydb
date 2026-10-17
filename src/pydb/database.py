@@ -439,10 +439,9 @@ class Database:
             DatabaseError: If no table with that name exists.
 
         """
-        if name not in self._tables:
-            msg = f"Table {name!r} does not exist"
-            raise DatabaseError(msg)
-        table = self._tables.pop(name)
+        table = self.get_table(name)
+        table.about_to_change()  # an open transaction copies it first
+        del self._tables[name]
         was_dropped = name in self._dropped
         self._dropped.add(name)
         self._detach(table)

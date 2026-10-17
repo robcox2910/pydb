@@ -13,6 +13,11 @@ after every successful change and hands it to its *sink* (see
 write it -- the table takes the change back before passing the error on, so
 memory never holds a change nobody recorded.
 
+Uniqueness is checked with a register of values (see ``pydb.unique``), so
+a UNIQUE or PRIMARY KEY check never walks through every row. An open
+``Transaction`` asks to be told just before the table's first change
+(``watch``), so it only copies the tables it really changes.
+
 Every public method holds the table's ``lock`` while it runs (see
 ``pydb.locking``). A table on its own has a lock of its own; a table that
 belongs to a ``Database`` shares the database's lock.
@@ -28,6 +33,10 @@ from pydb.index import Index
 from pydb.locking import LockType, lock_public_methods
 from pydb.record import Record, Value
 from pydb.schema import Schema
+from pydb.unique import UniqueRegister
+
+Watcher = Callable[["Table"], None]
+"""Called with the table just before its next change (see ``Table.watch``)."""
 
 
 class TableIndexError(PyDBError):
@@ -57,6 +66,8 @@ class Table:
         "_records",
         "_schema",
         "_sink",
+        "_unique",
+        "_watcher",
     )
 
     def __init__(self, name: str, schema: Schema) -> None:
@@ -69,6 +80,8 @@ class Table:
         self._sink: ChangeSink | None = None
         self._after_sink: Callable[[], None] | None = None
         self._lock: LockType = threading.RLock()
+        self._unique = UniqueRegister(schema.unique_columns)
+        self._watcher: Watcher | None = None
 
     @property
     def lock(self) -> LockType:
@@ -118,6 +131,7 @@ class Table:
         table._next_id = next_id
         for record in records:
             table._records[record.record_id] = record
+        table._unique.rebuild(table._records.values())
         for index_name, column in indexes:
             table._add_index(index_name, column)
         return table
@@ -135,6 +149,30 @@ class Table:
         """
         self._sink = sink
         self._after_sink = after
+
+    def watch(self, watcher: Watcher | None) -> None:
+        """Call *watcher* once, just before this table's next change (``None`` stops it).
+
+        A ``Transaction`` uses this to copy the table only when it is about
+        to change. The watcher runs before anything is changed; if it
+        raises, the change doesn't happen and the watcher stays.
+        """
+        self._watcher = watcher
+
+    def about_to_change(self) -> None:
+        """Tell the watcher, if any, that the table is about to change (then forget it).
+
+        The table's own changes do this themselves; the ``Database`` calls it
+        before dropping the table.
+        """
+        self._before_change()
+
+    def _before_change(self) -> None:
+        """Run the watcher once before a change (the lock is already held)."""
+        watcher = self._watcher
+        if watcher is not None:
+            watcher(self)
+            self._watcher = None
 
     @property
     def next_id(self) -> int:
@@ -233,7 +271,7 @@ class Table:
         """
         values = self._schema.coerce(values)
         self._schema.validate(values)
-        self._schema.check_constraints(values, self._records.values())
+        self._schema.check_constraints(values, unique=self._unique)
         record_id = self._next_id
         record = self._put_record(record_id, values)
         self._emit(
@@ -325,7 +363,7 @@ class Table:
         merged = record.data
         merged.update(values)
         self._schema.validate(merged)
-        self._schema.check_constraints(merged, self._records.values(), exclude_record_id=record_id)
+        self._schema.check_constraints(merged, exclude_record_id=record_id, unique=self._unique)
 
         updated = self._replace_data(record_id, merged)
         self._emit(
@@ -361,7 +399,8 @@ class Table:
         """Put the table back to an earlier state, in place (used by ``Transaction``).
 
         Anyone holding this ``Table`` object sees the restored rows -- not a
-        rolled-back leftover. Nothing is recorded.
+        rolled-back leftover. Nothing is recorded, and the watcher is
+        dropped (a restore is not a change).
 
         Args:
             records: The records to hold (they are used, not copied).
@@ -369,7 +408,9 @@ class Table:
             indexes: ``(name, column)`` pairs of indexes to rebuild.
 
         """
+        self._watcher = None
         self._records = {record.record_id: record for record in records}
+        self._unique.rebuild(records)
         self._next_id = next_id
         self._indexes = {}
         for index_name, column in indexes:
@@ -449,15 +490,22 @@ class Table:
                 raise PyDBError(msg)
 
     # -- raw building blocks (no validation, no recording) -------------------
+    # Every change to rows or indexes goes through one of these, so each one
+    # first calls ``_before_change`` and keeps the unique register in step.
 
     def _put_record(self, record_id: int, data: Mapping[str, Value]) -> Record:
         """Store a record under *record_id*, keeping records in ID order."""
+        self._before_change()
         record = Record(record_id=record_id, data=data)
+        replaced = self._records.get(record_id)
+        if replaced is not None:
+            self._unique.remove(replaced)
         out_of_order = bool(self._records) and record_id < next(reversed(self._records))
         self._records[record_id] = record
         if out_of_order:
             self._records = dict(sorted(self._records.items()))
         self._next_id = max(self._next_id, record_id + 1)
+        self._unique.add(record)
         for idx in self._indexes.values():
             idx.insert(record[idx.column], record_id)
         return record
@@ -468,22 +516,28 @@ class Table:
         The old ``Record`` object is left untouched, so rows that a reader
         already got from ``select()`` never change under its feet.
         """
+        self._before_change()
         record = self._records[record_id]
         for idx in self._indexes.values():
             if record[idx.column] != data[idx.column]:
                 idx.delete(record[idx.column], record_id)
                 idx.insert(data[idx.column], record_id)
         self._records[record_id] = replacement = Record(record_id=record_id, data=data)
+        self._unique.remove(record)
+        self._unique.add(replacement)
         return replacement
 
     def _remove_record(self, record_id: int) -> None:
         """Remove a record and its index entries."""
+        self._before_change()
         record = self._records.pop(record_id)
+        self._unique.remove(record)
         for idx in self._indexes.values():
             idx.delete(record[idx.column], record_id)
 
     def _add_index(self, index_name: str, column: str) -> Index:
         """Build an index on *column* filled with every current record."""
+        self._before_change()
         idx = Index(name=index_name, column=column)
         for record in self._records.values():
             idx.insert(record[column], record.record_id)
@@ -492,6 +546,7 @@ class Table:
 
     def _remove_index(self, index_name: str) -> None:
         """Forget an index."""
+        self._before_change()
         del self._indexes[index_name]
 
     def __repr__(self) -> str:

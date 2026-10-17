@@ -1,9 +1,16 @@
 """Transactions -- the "no take-backs" rule with a safety net.
 
 A transaction groups several database operations so they either all
-happen (commit) or none happen (rollback). Under the hood, we snapshot
-each table's state (rows *and* index definitions) at the start and restore
-it on rollback.
+happen (commit) or none happen (rollback). Under the hood, we snapshot a
+table's state (rows *and* index definitions) and restore it on rollback.
+
+The snapshots are *lazy* (copy-on-first-write): like only photocopying the
+pages of a notebook you are about to scribble on, a table is copied just
+before the transaction first changes it -- an insert, update, delete,
+index change or a drop of the table -- whichever way the change is made
+(a ``Table`` you got earlier, SQL, ...). A table the transaction never
+touches is never copied, so a small transaction stays quick however big
+the rest of the database is.
 
 While a transaction is open, the database holds every ``Change`` note in a
 bundle instead of committing it straight away. ``commit()`` hands the whole
@@ -40,7 +47,7 @@ class TransactionError(PyDBError):
 
 
 @dataclass(frozen=True, slots=True)
-class _TableSnapshot:
+class TableSnapshot:
     """A frozen copy of a table's state for rollback.
 
     Args:
@@ -57,14 +64,29 @@ class _TableSnapshot:
     indexes: list[tuple[str, str]]
 
 
+def snapshot_table(table: Table) -> TableSnapshot:
+    """Copy *table*'s rows, next ID and index definitions for a later rollback.
+
+    Each record is copied, so the snapshot shares nothing with the live table.
+    """
+    return TableSnapshot(
+        table=table,
+        records=[Record(record_id=r.record_id, data=r.data) for r in table.select()],
+        next_id=table.next_id,
+        indexes=table.index_definitions,
+    )
+
+
 class Transaction:
     """Wrap a database session with commit/rollback semantics.
 
-    On creation, takes the database's lock, snapshots every table and
-    starts holding changes. On commit, delivers the held changes as one
-    batch and discards the snapshots. On rollback, restores every table from
-    its snapshot and discards the held changes. Either way the lock is
-    handed back -- also when a commit fails.
+    On creation, takes the database's lock, starts holding changes and asks
+    every table to tell it before its first change (``Table.watch``); a
+    table is snapshotted only then. On commit, delivers the held changes as
+    one batch and discards the snapshots. On rollback, restores every
+    snapshotted table, puts back tables that were dropped or replaced,
+    removes tables created inside the transaction, and discards the held
+    changes. Either way the lock is handed back -- also when a commit fails.
 
     Args:
         database: The database to transact against.
@@ -80,20 +102,21 @@ class Transaction:
         "_database",
         "_finished",
         "_holding",
-        "_original_table_names",
+        "_originals",
         "_owner",
         "_snapshots",
     )
 
     def __init__(self, database: Database) -> None:
-        """Begin a transaction by snapshotting all tables."""
+        """Begin a transaction: lock, hold changes and watch every table."""
         self._database = database
         self._finished = False
         # Set when commit() failed and already rolled back, so a later
         # rollback() (the usual ``except: txn.rollback()``) is a no-op.
         self._commit_failed = False
-        self._snapshots: dict[str, _TableSnapshot] = {}
-        self._original_table_names: frozenset[str] = frozenset()
+        self._snapshots: list[TableSnapshot] = []
+        # The tables at the start, by name (rollback puts these objects back).
+        self._originals: dict[str, Table] = {}
         database.lock.acquire()  # other threads' transactions finish first
         self._owner = threading.get_ident()
         self._holding = True
@@ -103,8 +126,9 @@ class Transaction:
             self._release()
             raise TransactionError(str(exc)) from exc
         try:
-            self._take_snapshots()
+            self._watch_tables()
         except BaseException:
+            self._unwatch()
             database.discard_batch()
             self._finished = True
             self._release()
@@ -148,20 +172,21 @@ class Transaction:
             self._holding = False
             self._database.lock.release()
 
-    def _take_snapshots(self) -> None:
-        """Snapshot every table's current state."""
-        self._original_table_names = frozenset(self._database.table_names())
-        for name in self._original_table_names:
-            table = self._database.get_table(name)
-            # A copy of each record, so the snapshot shares nothing with the
-            # live table.
-            snapshot_records = [Record(record_id=r.record_id, data=r.data) for r in table.select()]
-            self._snapshots[name] = _TableSnapshot(
-                table=table,
-                records=snapshot_records,
-                next_id=table.next_id,
-                indexes=table.index_definitions,
-            )
+    def _watch_tables(self) -> None:
+        """Remember every table and ask each to call ``_snapshot`` before its first change."""
+        for name in self._database.table_names():
+            self._originals[name] = self._database.get_table(name)
+        for table in self._originals.values():
+            table.watch(self._snapshot)
+
+    def _snapshot(self, table: Table) -> None:
+        """Copy *table* just before this transaction first changes it."""
+        self._snapshots.append(snapshot_table(table))
+
+    def _unwatch(self) -> None:
+        """Stop every table from calling back (the transaction is ending)."""
+        for table in self._originals.values():
+            table.watch(None)
 
     def get_table(self, name: str) -> Table:
         """Return a table from the database for use within this transaction.
@@ -225,13 +250,15 @@ class Transaction:
     def _finish_committed(self) -> None:
         """Mark the transaction committed and drop its snapshots."""
         self._finished = True
+        self._unwatch()
         self._snapshots.clear()
+        self._originals.clear()
 
     def rollback(self) -> None:
         """Roll back the transaction -- undo all changes.
 
-        Restores every table to the state it was in when the transaction
-        began, and throws away the held changes. Does nothing if a failed
+        Restores every table the transaction changed to the state it was in
+        when the transaction began, and throws away the held changes. Does nothing if a failed
         ``commit()`` already rolled the transaction back.
 
         Raises:
@@ -251,21 +278,25 @@ class Transaction:
     def _restore(self) -> None:
         """Put every table back as it was at the start and end the transaction."""
         self._finished = True
+        self._unwatch()
 
-        # Restore snapshotted tables in place, so a reader holding one of
-        # these Table objects never sees the rolled-back work.
-        for snapshot in self._snapshots.values():
+        # Restore the changed tables in place, so a reader holding one of
+        # these Table objects never sees the rolled-back work. Untouched
+        # tables need nothing but their place in the catalog.
+        for snapshot in self._snapshots:
             snapshot.table.restore(snapshot.records, snapshot.next_id, snapshot.indexes)
-            self._database.replace_table(snapshot.table)
+        for table in self._originals.values():
+            self._database.replace_table(table)
 
         # Remove tables created during the transaction. The batch is still
         # open, so these drops are held -- and then thrown away below.
         current_names = set(self._database.table_names())
-        for name in current_names - self._original_table_names:
+        for name in current_names - self._originals.keys():
             self._database.drop_table(name)
 
         self._database.discard_batch()
         self._snapshots.clear()
+        self._originals.clear()
 
     @property
     def is_active(self) -> bool:
