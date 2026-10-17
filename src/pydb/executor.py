@@ -39,6 +39,7 @@ from pydb.query import (
 from pydb.record import Record, Value
 from pydb.schema import Schema
 from pydb.sql_literals import mismatched_date_comparison
+from pydb.statement_commit import one_commit
 from pydb.statements import (
     CreateIndexStatement,
     CreateTableStatement,
@@ -635,9 +636,10 @@ def _execute_update(stmt: UpdateStatement, database: Database) -> ExecuteResult:
     records = table.select(where=stmt.where.matches) if stmt.where is not None else table.select()
 
     count = 0
-    for record in records:
-        _wrap_error("UPDATE", table.update, record_id=record.record_id, values=stmt.assignments)
-        count += 1
+    with one_commit(database, len(records)):  # all rows or none, one journal line
+        for record in records:
+            _wrap_error("UPDATE", table.update, record_id=record.record_id, values=stmt.assignments)
+            count += 1
 
     row_word = "row" if count == 1 else "rows"
     return _result_message(f"{count} {row_word} updated")
@@ -652,9 +654,10 @@ def _execute_delete(stmt: DeleteStatement, database: Database) -> ExecuteResult:
     records = table.select(where=stmt.where.matches) if stmt.where is not None else table.select()
 
     count = 0
-    for record in records:
-        table.delete(record_id=record.record_id)
-        count += 1
+    with one_commit(database, len(records)):  # all rows or none, one journal line
+        for record in records:
+            table.delete(record_id=record.record_id)
+            count += 1
 
     row_word = "row" if count == 1 else "rows"
     return _result_message(f"{count} {row_word} deleted")

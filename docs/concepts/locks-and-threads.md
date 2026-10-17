@@ -16,7 +16,9 @@ the same time. The "pen" is a **lock**.
 Every `Database` has one lock (`db.lock`), and every table it hands out
 shares it. Every public method -- `insert`, `select`, `update`, running a
 SQL statement -- picks up the pen first and puts it down when it's done.
-So one SQL `UPDATE` that changes ten rows is never seen half-finished.
+So another thread never sees one SQL `UPDATE` that changes ten rows
+half-finished. (It is also a single commit -- one line in the
+[journal](journal.md), all ten rows or none.)
 
 A [transaction](transactions.md) holds the pen for its *whole* life:
 `Transaction(db)` picks it up and `commit()` or `rollback()` hands it back.

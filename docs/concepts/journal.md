@@ -31,7 +31,9 @@ Each line in the diary is one **commit**:
 - **`length`** and **`checksum`** let PyDB spot a line that was only half
   written (see [Torn Writes](torn-writes.md)).
 
-A change outside a transaction is its own commit. A whole
+A change outside a transaction is its own commit. One SQL `UPDATE` or
+`DELETE` is one commit too, however many rows it touches: if a row fails
+part-way (say it breaks a `UNIQUE` rule), the whole statement is undone. A whole
 [transaction](transactions.md) is **one** line, written in one go -- so on
 disk it's all-or-nothing too. A rolled-back transaction never reaches the
 diary at all.
@@ -109,6 +111,8 @@ disk until you call `save()`.
 
 - A commit survives without `save()`.
 - Each autocommit is one diary line; a transaction is one line.
+- A ten-row SQL `UPDATE` or `DELETE` is one line and one `fsync`; a crash
+  halfway through it leaves none of its rows changed.
 - A rolled-back transaction leaves no trace in the diary.
 - Every kind of change (tables, rows, indexes) is written and read back.
 - Each line's length and CRC-32 checksum are checked when it is read.

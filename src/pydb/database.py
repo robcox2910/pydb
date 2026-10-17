@@ -271,6 +271,11 @@ class Database:
         return self._path
 
     @property
+    def in_transaction(self) -> bool:
+        """Return whether a transaction is open (holding changes until it commits)."""
+        return self._commits.batching
+
+    @property
     def journalled(self) -> bool:
         """Return whether commits are written to a journal."""
         return self._store is not None

@@ -18,14 +18,16 @@ without looking at what the child did.
 import os
 import random
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 
 from pydb.database import Database, DatabaseError
-from pydb.record import Value
+from pydb.executor import execute
+from pydb.record import Record, Value
 from pydb.schema import Column, Schema
+from pydb.sql_parser import parse_sql
 from pydb.table import Table
 from pydb.transaction import Transaction
 from pydb.types import DataType
@@ -131,6 +133,27 @@ def stale_after_recreate(folder: Path, count: int) -> None:
     db.create_table("cards", _cards_schema())
     _try_stale_write(cards)
     os._exit(1)
+
+
+def crash_mid_statement(folder: Path, count: int) -> None:
+    """Commit *count* rows, then crash halfway through one SQL ``UPDATE`` of them all."""
+    db = Database(folder, journal=True)
+    _cards_with_rows(db, count)
+    real_update = Table.update
+    done: list[int] = []
+
+    def update_then_maybe_crash(self: Table, record_id: int, values: Mapping[str, Value]) -> Record:
+        """Update one row; pull the plug once half the rows are done."""
+        result = real_update(self, record_id, values)
+        done.append(record_id)
+        if len(done) == count // 2:
+            os._exit(1)
+        return result
+
+    Table.update = update_then_maybe_crash  # the private test hook
+    execute(parse_sql(f"UPDATE cards SET power = {_NEW_POWER}"), db)
+    sys.stderr.write("the statement did not crash\n")
+    sys.exit(_NO_CRASH_EXIT)
 
 
 def checkpoint_workload(db: Database, *, prior_checkpoint: bool) -> None:
@@ -412,6 +435,7 @@ def crash_randomly(folder: Path, seed: int) -> None:
 _SCENARIOS = {
     "commit": commit_rows,
     "mid_txn": crash_mid_transaction,
+    "mid_statement": crash_mid_statement,
     "stale_drop": stale_after_drop,
     "stale_rollback": stale_after_rollback,
     "stale_recreate": stale_after_recreate,
