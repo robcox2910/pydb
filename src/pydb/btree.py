@@ -11,11 +11,12 @@ have the name "Alice").
 """
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Any
 
 # A key can be any sortable value type the database supports.
 # In practice, all keys in one index share the same type (all str or all int).
-BTreeKey = str | int | float | bool
+BTreeKey = str | int | float | bool | date | datetime
 
 # Default order (max children per node). 4 is small enough to see splits
 # in tests, big enough to be useful.

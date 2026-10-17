@@ -45,6 +45,13 @@ nav:
     - CSV Import/Export: concepts/csv.md
     - Write-Ahead Log: concepts/wal.md
     - MVCC: concepts/mvcc.md
+  - Durable Databases:
+    - Dates and Times: concepts/dates-and-times.md
+    - The Journal: concepts/journal.md
+    - Crash Recovery: concepts/crash-recovery.md
+    - Checkpoints: concepts/checkpoints.md
+    - Torn Writes: concepts/torn-writes.md
+    - Locks and Threads: concepts/locks-and-threads.md
 
 markdown_extensions:
   - admonition

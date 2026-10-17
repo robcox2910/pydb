@@ -6,12 +6,26 @@ follows the same template (schema), and each card has a unique serial number
 
 Tables can also have **indexes** -- like a card catalog that makes finding
 specific cards much faster.
+
+A table that belongs to a ``Database`` also writes a note (a ``Change``)
+after every successful change and hands it to its *sink* (see
+``pydb.changes``). If the sink refuses the note -- say the journal could not
+write it -- the table takes the change back before passing the error on, so
+memory never holds a change nobody recorded.
+
+Every public method holds the table's ``lock`` while it runs (see
+``pydb.locking``). A table on its own has a lock of its own; a table that
+belongs to a ``Database`` shares the database's lock.
 """
 
-from collections.abc import Callable, Mapping
+import threading
+from collections.abc import Callable, Mapping, Sequence
 
-from pydb.errors import PyDBError, RecordNotFoundError, SchemaError
+from pydb.changes import Change, ChangeKind, ChangeSink
+from pydb.commits import is_committed
+from pydb.errors import PyDBError, RecordNotFoundError
 from pydb.index import Index
+from pydb.locking import LockType, lock_public_methods
 from pydb.record import Record, Value
 from pydb.schema import Schema
 
@@ -20,6 +34,7 @@ class TableIndexError(PyDBError):
     """Raise when an index operation fails."""
 
 
+@lock_public_methods
 class Table:
     """Represent a database table that holds records and indexes.
 
@@ -33,7 +48,16 @@ class Table:
 
     """
 
-    __slots__ = ("_indexes", "_name", "_next_id", "_records", "_schema")
+    __slots__ = (
+        "_after_sink",
+        "_indexes",
+        "_lock",
+        "_name",
+        "_next_id",
+        "_records",
+        "_schema",
+        "_sink",
+    )
 
     def __init__(self, name: str, schema: Schema) -> None:
         """Create a new empty table with the given name and schema."""
@@ -42,6 +66,18 @@ class Table:
         self._records: dict[int, Record] = {}
         self._next_id = 1
         self._indexes: dict[str, Index] = {}
+        self._sink: ChangeSink | None = None
+        self._after_sink: Callable[[], None] | None = None
+        self._lock: LockType = threading.RLock()
+
+    @property
+    def lock(self) -> LockType:
+        """Return the lock every public method holds (the database's, once adopted)."""
+        return self._lock
+
+    def share_lock(self, lock: LockType) -> None:
+        """Use *lock* from now on (the owning ``Database`` hands over its own)."""
+        self._lock = lock
 
     @property
     def name(self) -> str:
@@ -60,16 +96,19 @@ class Table:
         schema: Schema,
         records: list[Record],
         next_id: int,
+        indexes: Sequence[tuple[str, str]] = (),
     ) -> Table:
         """Reconstruct a table from stored components.
 
-        Used by the storage engine to rebuild a table loaded from disk.
+        Used by the storage engine to rebuild a table loaded from disk, and
+        by transactions to restore a snapshot. Nothing is recorded.
 
         Args:
             name: The table name.
             schema: The table schema.
             records: The records to populate the table with.
             next_id: The next auto-increment ID.
+            indexes: ``(name, column)`` pairs of indexes to rebuild.
 
         Returns:
             A fully populated table.
@@ -79,7 +118,23 @@ class Table:
         table._next_id = next_id
         for record in records:
             table._records[record.record_id] = record
+        for index_name, column in indexes:
+            table._add_index(index_name, column)
         return table
+
+    def set_sink(self, sink: ChangeSink | None, after: Callable[[], None] | None = None) -> None:
+        """Choose the function that receives a ``Change`` after each change.
+
+        The owning ``Database`` calls this; ``None`` stops recording.
+
+        Args:
+            sink: Receives each change; if it raises, the change is undone.
+            after: Called once the sink accepted a change, outside the undo
+                step -- an error from it never undoes the change.
+
+        """
+        self._sink = sink
+        self._after_sink = after
 
     @property
     def next_id(self) -> int:
@@ -95,6 +150,11 @@ class Table:
     def indexes(self) -> dict[str, Index]:
         """Return the table's indexes (name → Index)."""
         return dict(self._indexes)
+
+    @property
+    def index_definitions(self) -> list[tuple[str, str]]:
+        """Return ``(name, column)`` for each index, oldest first."""
+        return [(idx.name, idx.column) for idx in self._indexes.values()]
 
     def create_index(self, index_name: str, column: str) -> Index:
         """Create a new index on a column.
@@ -120,13 +180,12 @@ class Table:
             msg = f"Column {column!r} does not exist in table {self._name!r}"
             raise TableIndexError(msg)
 
-        idx = Index(name=index_name, column=column)
-
-        # Populate with existing records.
-        for record in self._records.values():
-            idx.insert(record[column], record.record_id)
-
-        self._indexes[index_name] = idx
+        idx = self._add_index(index_name, column)
+        definition = (index_name, column)
+        self._emit(
+            Change(ChangeKind.CREATE_INDEX, self._name, index=definition),
+            undo=Change(ChangeKind.DROP_INDEX, self._name, index=definition),
+        )
         return idx
 
     def drop_index(self, index_name: str) -> None:
@@ -142,7 +201,12 @@ class Table:
         if index_name not in self._indexes:
             msg = f"Index {index_name!r} does not exist on table {self._name!r}"
             raise TableIndexError(msg)
-        del self._indexes[index_name]
+        definition = (index_name, self._indexes[index_name].column)
+        self._remove_index(index_name)
+        self._emit(
+            Change(ChangeKind.DROP_INDEX, self._name, index=definition),
+            undo=Change(ChangeKind.CREATE_INDEX, self._name, index=definition),
+        )
 
     def get_index_for_column(self, column: str) -> Index | None:
         """Return an index covering the given column, if one exists."""
@@ -169,16 +233,13 @@ class Table:
         """
         values = self._schema.coerce(values)
         self._schema.validate(values)
-        self._check_constraints(values)
+        self._schema.check_constraints(values, self._records.values())
         record_id = self._next_id
-        self._next_id += 1
-        record = Record(record_id=record_id, data=values)
-        self._records[record_id] = record
-
-        # Update indexes.
-        for idx in self._indexes.values():
-            idx.insert(record[idx.column], record_id)
-
+        record = self._put_record(record_id, values)
+        self._emit(
+            Change(ChangeKind.INSERT, self._name, record_id=record_id, data=record.data),
+            undo=Change(ChangeKind.DELETE, self._name, record_id=record_id),
+        )
         return record
 
     def select(
@@ -242,12 +303,15 @@ class Table:
         keep their current values. The schema validates the new values.
         All affected indexes are updated.
 
+        This returns a new ``Record``; Records you fetched earlier keep
+        their old values (so rows you are reading never change under you).
+
         Args:
             record_id: The ID of the record to update.
             values: Column-name-to-value mapping of fields to change.
 
         Returns:
-            The updated record.
+            The updated record (a new ``Record`` object).
 
         Raises:
             RecordNotFoundError: If no record with that ID exists.
@@ -256,20 +320,19 @@ class Table:
         """
         record = self.get(record_id)
         values = self._schema.coerce(values)
+        old = record.data
         # Build the full set of values for validation.
         merged = record.data
         merged.update(values)
         self._schema.validate(merged)
-        self._check_constraints(merged, exclude_record_id=record_id)
+        self._schema.check_constraints(merged, self._records.values(), exclude_record_id=record_id)
 
-        # Update indexes for changed columns.
-        for idx in self._indexes.values():
-            if idx.column in values:
-                idx.delete(record[idx.column], record_id)
-                idx.insert(values[idx.column], record_id)
-
-        record.update_fields(values)
-        return record
+        updated = self._replace_data(record_id, merged)
+        self._emit(
+            Change(ChangeKind.UPDATE, self._name, record_id=record_id, data=updated.data),
+            undo=Change(ChangeKind.UPDATE, self._name, record_id=record_id, data=old),
+        )
+        return updated
 
     def delete(self, record_id: int) -> None:
         """Remove a record from the table. All indexes are updated.
@@ -285,51 +348,151 @@ class Table:
             msg = f"No record with id={record_id} in table {self._name!r}"
             raise RecordNotFoundError(msg)
 
-        record = self._records[record_id]
+        old = self._records[record_id].data
+        self._remove_record(record_id)
+        self._emit(
+            Change(ChangeKind.DELETE, self._name, record_id=record_id),
+            undo=Change(ChangeKind.INSERT, self._name, record_id=record_id, data=old),
+        )
 
-        # Update indexes.
+    def restore(
+        self, records: Sequence[Record], next_id: int, indexes: Sequence[tuple[str, str]]
+    ) -> None:
+        """Put the table back to an earlier state, in place (used by ``Transaction``).
+
+        Anyone holding this ``Table`` object sees the restored rows -- not a
+        rolled-back leftover. Nothing is recorded.
+
+        Args:
+            records: The records to hold (they are used, not copied).
+            next_id: The next auto-increment ID.
+            indexes: ``(name, column)`` pairs of indexes to rebuild.
+
+        """
+        self._records = {record.record_id: record for record in records}
+        self._next_id = next_id
+        self._indexes = {}
+        for index_name, column in indexes:
+            self._add_index(index_name, column)
+
+    # -- recording -----------------------------------------------------------
+
+    def _emit(self, change: Change, *, undo: Change) -> None:
+        """Hand *change* to the sink; if the sink fails, apply *undo* and re-raise.
+
+        An exception marked ``is_committed`` (it came after the change was
+        already durable) is passed on without undoing anything.
+
+        Args:
+            change: The note describing the change just made in memory.
+            undo: The opposite change, which puts memory back as it was.
+
+        """
+        if self._sink is None:
+            return
+        try:
+            self._sink(change)
+        except BaseException as exc:
+            if is_committed(exc):  # already in the journal: it stands
+                raise
+            self._apply_change(undo)
+            if change.kind is ChangeKind.INSERT and change.record_id is not None:
+                # Hand back the ID number the failed insert used up.
+                self._next_id = change.record_id
+            raise
+        if self._after_sink is not None:
+            self._after_sink()
+
+    def replay_change(self, change: Change) -> None:
+        """Redo a journalled row or index change exactly (used by recovery).
+
+        No checks run and nothing is recorded: the change was checked when
+        it first happened. The record keeps its original ID.
+
+        Args:
+            change: The change to redo.
+
+        Raises:
+            PyDBError: If the change is not a complete row or index change.
+            KeyError: If it names a record or index that isn't there.
+
+        """
+        self._apply_change(change)
+
+    def _apply_change(self, change: Change) -> None:
+        """Apply a row or index change exactly, without checks or recording.
+
+        Used to undo a change whose note was refused, and (through
+        ``replay_change``) to replay a journal. Table-level kinds (create/drop table) belong to the
+        ``Database``.
+
+        Args:
+            change: The change to apply.
+
+        Raises:
+            PyDBError: If the change is not a complete row or index change.
+
+        """
+        match change:
+            case Change(kind=ChangeKind.INSERT, record_id=int() as rid, data=dict() as data):
+                self._put_record(rid, data)
+            case Change(kind=ChangeKind.UPDATE, record_id=int() as rid, data=dict() as data):
+                self._replace_data(rid, data)
+            case Change(kind=ChangeKind.DELETE, record_id=int() as rid):
+                self._remove_record(rid)
+            case Change(kind=ChangeKind.CREATE_INDEX, index=(index_name, column)):
+                self._add_index(index_name, column)
+            case Change(kind=ChangeKind.DROP_INDEX, index=(index_name, _)):
+                self._remove_index(index_name)
+            case _:
+                msg = f"Cannot apply {change!r} to table {self._name!r}"
+                raise PyDBError(msg)
+
+    # -- raw building blocks (no validation, no recording) -------------------
+
+    def _put_record(self, record_id: int, data: Mapping[str, Value]) -> Record:
+        """Store a record under *record_id*, keeping records in ID order."""
+        record = Record(record_id=record_id, data=data)
+        out_of_order = bool(self._records) and record_id < next(reversed(self._records))
+        self._records[record_id] = record
+        if out_of_order:
+            self._records = dict(sorted(self._records.items()))
+        self._next_id = max(self._next_id, record_id + 1)
+        for idx in self._indexes.values():
+            idx.insert(record[idx.column], record_id)
+        return record
+
+    def _replace_data(self, record_id: int, data: Mapping[str, Value]) -> Record:
+        """Swap in a new record with *data*, moving its index entries to match.
+
+        The old ``Record`` object is left untouched, so rows that a reader
+        already got from ``select()`` never change under its feet.
+        """
+        record = self._records[record_id]
+        for idx in self._indexes.values():
+            if record[idx.column] != data[idx.column]:
+                idx.delete(record[idx.column], record_id)
+                idx.insert(data[idx.column], record_id)
+        self._records[record_id] = replacement = Record(record_id=record_id, data=data)
+        return replacement
+
+    def _remove_record(self, record_id: int) -> None:
+        """Remove a record and its index entries."""
+        record = self._records.pop(record_id)
         for idx in self._indexes.values():
             idx.delete(record[idx.column], record_id)
 
-        del self._records[record_id]
+    def _add_index(self, index_name: str, column: str) -> Index:
+        """Build an index on *column* filled with every current record."""
+        idx = Index(name=index_name, column=column)
+        for record in self._records.values():
+            idx.insert(record[column], record.record_id)
+        self._indexes[index_name] = idx
+        return idx
 
-    def _check_constraints(
-        self,
-        values: Mapping[str, Value],
-        exclude_record_id: int | None = None,
-    ) -> None:
-        """Check NOT NULL, UNIQUE, and PRIMARY KEY constraints.
-
-        Args:
-            values: The column values to check.
-            exclude_record_id: A record ID to exclude from uniqueness
-                checks (used during UPDATE so the record doesn't
-                conflict with itself).
-
-        Raises:
-            SchemaError: If any constraint is violated.
-
-        """
-        for col in self._schema.columns:
-            if not (col.primary_key or col.not_null or col.unique):
-                continue
-
-            val = values.get(col.name)
-
-            # NOT NULL / PRIMARY KEY: value must be present.
-            if (col.not_null or col.primary_key) and val is None:
-                msg = f"Column {col.name!r} cannot be NULL"
-                raise SchemaError(msg)
-
-            # UNIQUE / PRIMARY KEY: no duplicate values.
-            if (col.unique or col.primary_key) and val is not None:
-                for record in self._records.values():
-                    if exclude_record_id is not None and record.record_id == exclude_record_id:
-                        continue
-                    if record[col.name] == val:
-                        constraint = "PRIMARY KEY" if col.primary_key else "UNIQUE"
-                        msg = f"{constraint} violation: {col.name!r} value {val!r} already exists"
-                        raise SchemaError(msg)
+    def _remove_index(self, index_name: str) -> None:
+        """Forget an index."""
+        del self._indexes[index_name]
 
     def __repr__(self) -> str:
         """Return a developer-friendly string representation."""

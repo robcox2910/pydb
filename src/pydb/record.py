@@ -5,10 +5,11 @@ number (the ID) and a set of facts printed on it (the data fields).
 """
 
 from collections.abc import Mapping
+from datetime import date, datetime
 from typing import Any
 
 # Type alias for values stored in a record.
-Value = str | int | float | bool
+Value = str | int | float | bool | date | datetime
 
 
 class Record:
@@ -72,7 +73,13 @@ class Record:
         return f"Record(record_id={self._record_id}, data={self._data})"
 
     def update_fields(self, values: Mapping[str, Value]) -> None:
-        """Update fields in this record.
+        """Change fields of this record in place (internal and unsafe -- use ``Table.update``).
+
+        This skips everything a table does for a change: no schema check,
+        no index update, no lock, no commit listeners and no journal entry
+        -- on a journalled database it survives a crash only if a later
+        checkpoint happens to snapshot that table. PyDB itself never calls
+        it (``Table.update`` swaps in a new ``Record`` instead).
 
         Args:
             values: Column-name-to-value mapping of fields to update.

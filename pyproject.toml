@@ -34,6 +34,7 @@ pydb = "pydb.cli:main"
 dev = [
     "pytest>=8.3.4",
     "pytest-cov>=6.0.0",
+    "pytest-timeout>=2.3.1",
     "ruff>=0.9.3",
     "pre-commit>=4.0.1",
     "pyright>=1.1.400",
@@ -127,6 +128,11 @@ max-args = 9
 "tests/**/*.py" = [
     "S101",   # Use of assert
     "SLF001", # Accessing private members in tests is fine
+    "S603",   # Crash tests run our own helper script in a child process
+]
+"examples/**/*.py" = [
+    "T201",   # Examples talk to the reader with print()
+    "S603",   # The crash example runs itself as a child process
 ]
 "src/pydb/executor.py" = [
     "PLR0911", # Dispatch function has many return statements by design
@@ -151,6 +157,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "--verbose",
+    "--timeout=10",
     "--cov=src/pydb",
     "--cov-report=term-missing",
     "--cov-fail-under=80",

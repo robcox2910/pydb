@@ -62,6 +62,12 @@ everything if we need to.
 Real databases use fancier techniques (write-ahead logs, MVCC), but
 the idea is the same: always be able to go back to a safe state.
 
+On a journalled database (`Database(path, journal=True)`) a committed
+transaction is also written to the [journal](journal.md) as one line, so
+it survives a crash -- and `with Transaction(db) as txn:` commits for you,
+or rolls back if an error escapes the block. Threads take turns while a
+transaction is open (see [Locks and Threads](locks-and-threads.md)).
+
 ## What We Test
 
 - A committed transaction's changes are visible.

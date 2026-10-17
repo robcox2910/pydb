@@ -38,3 +38,4 @@ src/pydb/_version.py
 
 # MkDocs
 site/
+.superpowers/

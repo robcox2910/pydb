@@ -17,6 +17,7 @@ the requested operation:
 """
 
 from collections.abc import Sequence
+from datetime import date, datetime
 from typing import Any, Protocol
 
 from pydb.database import Database
@@ -37,6 +38,8 @@ from pydb.query import (
 )
 from pydb.record import Record, Value
 from pydb.schema import Schema
+from pydb.sql_literals import mismatched_date_comparison
+from pydb.statement_commit import one_commit
 from pydb.statements import (
     CreateIndexStatement,
     CreateTableStatement,
@@ -222,28 +225,29 @@ def execute(query_or_stmt: Query | Statement, database: Database) -> ExecuteResu
         QueryError: If the operation fails.
 
     """
-    if isinstance(query_or_stmt, Query):
-        return _execute_select(query_or_stmt, database)
-    if isinstance(query_or_stmt, CreateTableStatement):
-        return _execute_create_table(query_or_stmt, database)
-    if isinstance(query_or_stmt, DropTableStatement):
-        return _execute_drop_table(query_or_stmt, database)
-    if isinstance(query_or_stmt, InsertStatement):
-        return _execute_insert(query_or_stmt, database)
-    if isinstance(query_or_stmt, UpdateStatement):
-        return _execute_update(query_or_stmt, database)
-    if isinstance(query_or_stmt, DeleteStatement):
-        return _execute_delete(query_or_stmt, database)
-    if isinstance(query_or_stmt, CreateIndexStatement):
-        return _execute_create_index(query_or_stmt, database)
-    if isinstance(query_or_stmt, DropIndexStatement):
-        return _execute_drop_index(query_or_stmt, database)
-    if isinstance(query_or_stmt, ExplainStatement):
-        return _execute_explain(query_or_stmt, database)
-    if isinstance(query_or_stmt, CreateViewStatement):
-        return _execute_create_view(query_or_stmt, database)
-    # Must be DropViewStatement (type narrowing guarantees this).
-    return _execute_drop_view(query_or_stmt, database)
+    with database.lock:  # one statement is one turn: no writer runs half-way through it
+        if isinstance(query_or_stmt, Query):
+            return _execute_select(query_or_stmt, database)
+        if isinstance(query_or_stmt, CreateTableStatement):
+            return _execute_create_table(query_or_stmt, database)
+        if isinstance(query_or_stmt, DropTableStatement):
+            return _execute_drop_table(query_or_stmt, database)
+        if isinstance(query_or_stmt, InsertStatement):
+            return _execute_insert(query_or_stmt, database)
+        if isinstance(query_or_stmt, UpdateStatement):
+            return _execute_update(query_or_stmt, database)
+        if isinstance(query_or_stmt, DeleteStatement):
+            return _execute_delete(query_or_stmt, database)
+        if isinstance(query_or_stmt, CreateIndexStatement):
+            return _execute_create_index(query_or_stmt, database)
+        if isinstance(query_or_stmt, DropIndexStatement):
+            return _execute_drop_index(query_or_stmt, database)
+        if isinstance(query_or_stmt, ExplainStatement):
+            return _execute_explain(query_or_stmt, database)
+        if isinstance(query_or_stmt, CreateViewStatement):
+            return _execute_create_view(query_or_stmt, database)
+        # Must be DropViewStatement (type narrowing guarantees this).
+        return _execute_drop_view(query_or_stmt, database)
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +282,7 @@ def _execute_simple_select(query: Query, table: Table, database: Database) -> Ex
         # Resolve any subqueries in the WHERE clause before filtering.
         where = _resolve_subqueries(where, database)
         _validate_where_columns(where, valid_cols)
+        _check_date_comparisons(where, table)
         records = _select_records(table, where)
     else:
         records = table.select()
@@ -383,6 +388,11 @@ def _group_records(
 
 def _compute_aggregate(agg: AggregateColumn, records: Sequence[_RowLike]) -> Value:
     """Compute a single aggregate function over a group of records."""
+    if agg.function in (AggFunc.SUM, AggFunc.AVG) and any(
+        isinstance(r[agg.column], (date, datetime)) for r in records
+    ):
+        msg = f"{agg.function.value} is not supported on DATE or TIMESTAMP columns"
+        raise QueryError(msg)
     match agg.function:
         case AggFunc.COUNT:
             return len(records)
@@ -390,7 +400,8 @@ def _compute_aggregate(agg: AggregateColumn, records: Sequence[_RowLike]) -> Val
             values: list[Any] = [r[agg.column] for r in records]
             return sum(values)
         case AggFunc.AVG:
-            total = sum(float(r[agg.column]) for r in records)
+            avg_values: list[Any] = [r[agg.column] for r in records]
+            total = sum(float(v) for v in avg_values)
             return total / len(records) if records else 0.0
         case AggFunc.MIN:
             values: list[Any] = [r[agg.column] for r in records]
@@ -483,6 +494,13 @@ def _matches_dict(clause: WhereClause, row: dict[str, Value]) -> bool:
     if isinstance(clause, And):
         return _matches_dict(clause.left, row) and _matches_dict(clause.right, row)
     return _matches_dict(clause.left, row) or _matches_dict(clause.right, row)
+
+
+def _check_date_comparisons(clause: WhereClause, table: Table) -> None:
+    """Raise QueryError if a DATE/TIMESTAMP column meets the wrong kind of value."""
+    problem = mismatched_date_comparison(clause, table.schema)
+    if problem is not None:
+        raise QueryError(problem)
 
 
 def _validate_where_columns(clause: WhereClause, valid_columns: set[str]) -> None:
@@ -613,12 +631,15 @@ def _execute_update(stmt: UpdateStatement, database: Database) -> ExecuteResult:
     """Execute an UPDATE statement."""
     table = _get_table(database, stmt.table, "UPDATE")
 
+    if stmt.where is not None:
+        _check_date_comparisons(stmt.where, table)
     records = table.select(where=stmt.where.matches) if stmt.where is not None else table.select()
 
     count = 0
-    for record in records:
-        _wrap_error("UPDATE", table.update, record_id=record.record_id, values=stmt.assignments)
-        count += 1
+    with one_commit(database, len(records)):  # all rows or none, one journal line
+        for record in records:
+            _wrap_error("UPDATE", table.update, record_id=record.record_id, values=stmt.assignments)
+            count += 1
 
     row_word = "row" if count == 1 else "rows"
     return _result_message(f"{count} {row_word} updated")
@@ -628,12 +649,15 @@ def _execute_delete(stmt: DeleteStatement, database: Database) -> ExecuteResult:
     """Execute a DELETE FROM statement."""
     table = _get_table(database, stmt.table, "DELETE")
 
+    if stmt.where is not None:
+        _check_date_comparisons(stmt.where, table)
     records = table.select(where=stmt.where.matches) if stmt.where is not None else table.select()
 
     count = 0
-    for record in records:
-        table.delete(record_id=record.record_id)
-        count += 1
+    with one_commit(database, len(records)):  # all rows or none, one journal line
+        for record in records:
+            table.delete(record_id=record.record_id)
+            count += 1
 
     row_word = "row" if count == 1 else "rows"
     return _result_message(f"{count} {row_word} deleted")

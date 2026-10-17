@@ -7,12 +7,15 @@ forth so nothing gets lost.
 """
 
 import json
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import date
 from typing import Any, cast
 
 from pydb.errors import PyDBError
 from pydb.record import Record, Value
 from pydb.schema import Column, Schema
-from pydb.types import DataType
+from pydb.types import DataType, from_iso, to_iso
 
 
 class SerializationError(PyDBError):
@@ -22,10 +25,11 @@ class SerializationError(PyDBError):
 def _value_to_json(value: Value) -> str | int | float | bool:
     """Convert a record value to a JSON-safe Python type.
 
-    All Value types (str, int, float, bool) are already JSON-safe, so this
-    is effectively an identity function -- but it gives us a hook if we add
-    more types later.
+    Text, numbers and booleans are already JSON-safe; dates and timestamps
+    become ISO text.
     """
+    if isinstance(value, date):
+        return to_iso(value)
     return value
 
 
@@ -54,6 +58,8 @@ def _value_from_json(raw: str | int | float | bool, data_type: DataType) -> Valu
             if not isinstance(raw, bool):
                 return bool(raw)
             return raw
+        case DataType.DATE | DataType.TIMESTAMP:
+            return cast(Value, from_iso(str(raw), data_type))
         case _:  # pragma: no cover
             msg = f"Unsupported data type: {data_type}"
             raise SerializationError(msg)
@@ -183,11 +189,33 @@ def deserialize_record(
     return Record(record_id=record_id, data=values)
 
 
+@dataclass(frozen=True, slots=True)
+class StoredTable:
+    """Hold everything a table file contains.
+
+    Args:
+        name: The table name.
+        schema: The table's schema.
+        records: All records in the table.
+        next_id: The next auto-increment ID.
+        indexes: ``(name, column)`` for each index (empty for old files).
+
+    """
+
+    name: str
+    schema: Schema
+    records: list[Record]
+    next_id: int
+    indexes: list[tuple[str, str]]
+
+
 def serialize_table_data(
     name: str,
     schema: Schema,
     records: list[Record],
     next_id: int,
+    *,
+    indexes: Sequence[tuple[str, str]] = (),
 ) -> str:
     """Serialize a table's complete state to a JSON string.
 
@@ -196,6 +224,8 @@ def serialize_table_data(
         schema: The table's schema.
         records: All records in the table.
         next_id: The next auto-increment ID.
+        indexes: ``(name, column)`` for each index, stored as
+            ``"indexes": [{"name": ..., "column": ...}]``.
 
     Returns:
         A JSON string representing the full table state.
@@ -205,9 +235,34 @@ def serialize_table_data(
         "name": name,
         "schema": serialize_schema(schema),
         "next_id": next_id,
+        "indexes": [{"name": index_name, "column": column} for index_name, column in indexes],
         "records": [serialize_record(r) for r in records],
     }
     return json.dumps(payload, indent=2)
+
+
+def _deserialize_indexes(raw: Any) -> list[tuple[str, str]]:
+    """Read the ``"indexes"`` list, checking each entry has a name and column.
+
+    Raises:
+        SerializationError: If the list or an entry is malformed.
+
+    """
+    if not isinstance(raw, list):
+        msg = "Table 'indexes' must be a list"
+        raise SerializationError(msg)
+    definitions: list[tuple[str, str]] = []
+    for entry in cast(list[Any], raw):
+        if not isinstance(entry, dict):
+            msg = f"Invalid index definition: {entry!r}"
+            raise SerializationError(msg)
+        typed = cast(dict[str, Any], entry)
+        index_name, column = typed.get("name"), typed.get("column")
+        if not isinstance(index_name, str) or not isinstance(column, str):
+            msg = f"Invalid index definition: {entry!r}"
+            raise SerializationError(msg)
+        definitions.append((index_name, column))
+    return definitions
 
 
 def deserialize_table_data(
@@ -220,6 +275,26 @@ def deserialize_table_data(
 
     Returns:
         A tuple of (name, schema, records, next_id).
+
+    Raises:
+        SerializationError: If the JSON is invalid or missing fields.
+
+    """
+    stored = deserialize_table(json_str)
+    return stored.name, stored.schema, stored.records, stored.next_id
+
+
+def deserialize_table(json_str: str) -> StoredTable:
+    """Deserialize a JSON string into a ``StoredTable``, index list included.
+
+    Files written before index definitions were saved have no
+    ``"indexes"`` key; they load with no indexes.
+
+    Args:
+        json_str: A JSON string produced by ``serialize_table_data``.
+
+    Returns:
+        The table's stored state.
 
     Raises:
         SerializationError: If the JSON is invalid or missing fields.
@@ -247,5 +322,6 @@ def deserialize_table_data(
 
     schema = deserialize_schema(schema_data)
     records = [deserialize_record(r, schema) for r in records_data]
+    indexes = _deserialize_indexes(typed_payload.get("indexes", []))
 
-    return name, schema, records, next_id
+    return StoredTable(name, schema, records, next_id, indexes)

@@ -18,9 +18,18 @@ executor uses them automatically:
 - **Subqueries** -- scalar and IN subqueries in WHERE clauses
 - **Views** -- saved queries as virtual tables *(in-memory; not persisted)*
 - **B-Tree indexes** -- CREATE/DROP INDEX; equality lookups use the index
-  automatically *(in-memory; not persisted)*
+  automatically; index definitions are saved and rebuilt on load
 - **Query planner** -- EXPLAIN shows scan vs. index lookup decisions
 - **Constraints** -- PRIMARY KEY, NOT NULL, UNIQUE
+- **Dates and times** -- `DATE` and `TIMESTAMP` columns (stored in UTC),
+  with `DATE '…'` / `TIMESTAMP '…'` literals in SQL
+- **Transactions** -- commit/rollback via table snapshots, also as
+  `with Transaction(db):`
+- **Durable databases** -- `Database(path, journal=True)` writes every commit
+  to a checksummed journal before it counts, recovers after a crash, and
+  checkpoints to keep the journal short
+- **Locks** -- threads take turns on one database lock; a `LOCK` file stops
+  a second program opening the same journalled folder
 - **Storage engine** -- JSON persistence for table schemas and rows
 - **Interactive REPL** -- type SQL and see pretty-printed results
 
@@ -30,15 +39,23 @@ These live in their own modules and work *with* a `Database`, but they
 are **not** yet wired into the Database/executor pipeline -- import and
 drive them directly to see how each idea works:
 
-- **Transactions** (`pydb.transaction`) -- commit/rollback via table snapshots
 - **Write-Ahead Log** (`pydb.wal`) -- crash recovery via operation logging
+  (the real database uses its own journal: see "Durable databases" below)
 - **MVCC** (`pydb.mvcc`) -- multi-version concurrency for snapshot isolation
 - **CSV import/export** (`pydb.csv_io`) -- load and save spreadsheet files
 - **Outbox pattern** (`pydb.outbox`) -- atomic DB writes + message queue delivery
 
-> **Note on persistence:** `save()`/`load()` persist table schemas and
-> rows. Views and indexes currently live in memory only, so they are
-> rebuilt (or recreated) rather than restored on restart.
+> **Note on persistence:** `save()`/`load()` persist table schemas, rows
+> and index definitions. Views live in memory only, so they are recreated
+> rather than restored on restart. Without `journal=True`, nothing is safe
+> on disk until you call `save()`.
+
+> **Note on updates:** `Table.update()` is *copy-on-write*: it returns a new
+> `Record`, and a `Record` you fetched earlier keeps its old values, so rows
+> you are reading never change under you. Fetch the row again (`get()` or
+> `select()`) to see the new values. See
+> [docs/concepts/journal.md](docs/concepts/journal.md) for the other ways
+> every database now differs from before.
 
 ## Example
 
@@ -60,6 +77,56 @@ pydb> EXPLAIN SELECT * FROM cards WHERE name = 'Pikachu'
 Full table scan on cards
 ```
 
+## Durable databases
+
+Open a database with `journal=True` and every commit is written to
+`journal.log` -- and forced onto the disk -- before it returns. Reopening the
+folder (even after a crash) replays the journal, so committed work is
+never lost and unfinished transactions leave no trace:
+
+```python
+import tempfile
+from datetime import UTC, date, datetime
+from pathlib import Path
+
+from pydb.database import Database
+from pydb.schema import Column, Schema
+from pydb.transaction import Transaction
+from pydb.types import DataType
+
+with tempfile.TemporaryDirectory() as tmp:
+    folder = Path(tmp) / "jobs"
+    schema = Schema(columns=[
+        Column("job", DataType.TEXT),
+        Column("run_date", DataType.DATE),
+        Column("started", DataType.TIMESTAMP),
+    ])
+    with Database(folder, journal=True) as db:      # every commit is fsynced
+        runs = db.create_table("runs", schema)
+        runs.insert({"job": "backup", "run_date": date(2026, 10, 17),
+                     "started": datetime(2026, 10, 17, 2, 0, tzinfo=UTC)})
+        with Transaction(db) as txn:                 # all-or-nothing, one commit
+            txn.get_table("runs").insert({"job": "report", "run_date": date(2026, 10, 17),
+                                          "started": datetime(2026, 10, 17, 7, 30, tzinfo=UTC)})
+
+    with Database(folder, journal=True) as db:      # reopen: recovered from disk
+        print([row["job"] for row in db.get_table("runs").select()])
+```
+
+Output:
+
+```
+['backup', 'report']
+```
+
+Options: `sync=False` skips the fsync (fast, but a power cut can lose the
+last commits), `checkpoint_bytes` sets when the journal is checkpointed
+automatically (4 MiB by default), and `repair=True` opens a journal damaged
+in the middle by keeping the commits before the damage. `save()` and
+`close()` take a checkpoint. See it survive a real crash with
+`uv run python examples/crash_and_recover.py`, and read the
+"Durable Databases" learning path in [docs/index.md](docs/index.md).
+
 ## Quick Start
 
 ```bash
@@ -80,6 +147,25 @@ uv run pyright src tests
 ## Documentation
 
 Full docs at [robcox2910.github.io/pydb](https://robcox2910.github.io/pydb/)
+
+## Developing alongside a sibling
+
+PyDB has no sibling dependencies of its own, but
+[PyStack](https://github.com/robcox2910/pystack) pins PyDB to a release tag
+(in its `[tool.uv.sources]`), and its `uv.lock` records the exact commit. A
+change merged here can't affect PyStack until PyStack chooses to upgrade.
+
+To try an unreleased PyDB change from a PyStack checkout next to this one,
+install it over the pinned release:
+
+```bash
+cd ../pystack
+uv pip install -e ../pydb
+uv run --no-sync pytest
+```
+
+Use `uv run --no-sync` while you do this: a plain `uv run` (like `uv sync`)
+puts the pinned release back, which is how you undo the override.
 
 ## Releasing
 
