@@ -141,3 +141,7 @@ journalled or not:
 ## Next Up
 
 Head to [Crash Recovery](crash-recovery.md) to see the diary save the day.
+
+## See also
+
+- [PyStack](https://robcox2910.github.io/pystack/) -- the `dbcrash` demo pulls the plug on this very diary-keeping database and shows the finished work surviving.
