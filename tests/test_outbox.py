@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from pydb.changes import Change
 from pydb.database import Database
 from pydb.executor import execute
 from pydb.outbox import Outbox, OutboxError
@@ -253,3 +254,42 @@ class TestOutboxTable:
         Outbox(db)
         Outbox(db)  # Should not raise.
         assert db.table_names().count("_outbox") == ONE_MESSAGE
+
+
+class JournalDownError(Exception):
+    """Raise from a test commit listener to simulate a failing journal."""
+
+
+def _failing_listener(_changes: list[Change]) -> None:
+    """Refuse every commit."""
+    raise JournalDownError
+
+
+class TestOutboxCommitFailure:
+    """Verify a failing commit listener surfaces as an OutboxError."""
+
+    def test_execute_raises_outbox_error(self, tmp_path: Path) -> None:
+        """A refused commit becomes OutboxError, chained to the real cause."""
+        db = _make_db(tmp_path)
+        outbox = Outbox(db)
+        db.add_commit_listener(_failing_listener)
+        with pytest.raises(OutboxError) as excinfo:
+            outbox.execute(
+                sql="UPDATE accounts SET balance = 90 WHERE name = 'Alice'",
+                message={"queue": "q", "body": "b"},
+            )
+        assert isinstance(excinfo.value.__cause__, JournalDownError)
+        db.remove_commit_listener(_failing_listener)
+        assert outbox.pending_messages() == []
+
+    def test_execute_multi_raises_outbox_error(self, tmp_path: Path) -> None:
+        """A refused multi-statement commit also becomes OutboxError."""
+        db = _make_db(tmp_path)
+        outbox = Outbox(db)
+        db.add_commit_listener(_failing_listener)
+        with pytest.raises(OutboxError) as excinfo:
+            outbox.execute_multi(
+                statements=["UPDATE accounts SET balance = 90 WHERE name = 'Alice'"],
+                message={"queue": "q", "body": "b"},
+            )
+        assert isinstance(excinfo.value.__cause__, JournalDownError)

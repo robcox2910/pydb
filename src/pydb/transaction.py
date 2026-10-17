@@ -63,12 +63,21 @@ class Transaction:
 
     """
 
-    __slots__ = ("_database", "_finished", "_original_table_names", "_snapshots")
+    __slots__ = (
+        "_commit_failed",
+        "_database",
+        "_finished",
+        "_original_table_names",
+        "_snapshots",
+    )
 
     def __init__(self, database: Database) -> None:
         """Begin a transaction by snapshotting all tables."""
         self._database = database
         self._finished = False
+        # Set when commit() failed and already rolled back, so a later
+        # rollback() (the usual ``except: txn.rollback()``) is a no-op.
+        self._commit_failed = False
         self._snapshots: dict[str, _TableSnapshot] = {}
         self._original_table_names: frozenset[str] = frozenset()
         try:
@@ -114,7 +123,8 @@ class Transaction:
 
         The held changes go to the database's commit listeners as one
         batch. If a listener raises, the transaction is rolled back and the
-        error propagates.
+        error propagates; calling ``rollback()`` afterwards is then a
+        harmless no-op.
 
         Raises:
             TransactionError: If the transaction is already finished.
@@ -125,6 +135,7 @@ class Transaction:
             self._database.commit_batch()
         except BaseException:
             self._restore()
+            self._commit_failed = True
             raise
         self._finished = True
         self._snapshots.clear()
@@ -133,12 +144,16 @@ class Transaction:
         """Roll back the transaction -- undo all changes.
 
         Restores every table to the state it was in when the transaction
-        began, and throws away the held changes.
+        began, and throws away the held changes. Does nothing if a failed
+        ``commit()`` already rolled the transaction back.
 
         Raises:
-            TransactionError: If the transaction is already finished.
+            TransactionError: If the transaction was committed or already
+                rolled back.
 
         """
+        if self._commit_failed:
+            return
         self._check_active()
         self._restore()
 

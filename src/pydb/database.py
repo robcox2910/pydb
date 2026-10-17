@@ -81,6 +81,11 @@ class Database:
         ``Transaction.commit()`` rolls the transaction back. A commit with
         no changes does not call listeners.
 
+        Listeners must treat the changes as read-only -- never mutate
+        ``Change.data``. With several listeners, they run in the order
+        added, so an earlier listener may already have seen a batch that a
+        later listener's failure then undid.
+
         Args:
             listener: A function taking a list of ``Change`` notes.
 

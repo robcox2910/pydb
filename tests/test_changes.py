@@ -193,6 +193,12 @@ class TestSqlFlowsThroughRecording:
             ChangeKind.DROP_TABLE,
         ]
         assert all(len(batch) == 1 for batch in batches)
+        assert batches[1][0] == Change(
+            ChangeKind.INSERT, "t", record_id=FIRST_ID, data={"name": "Mew", "power": POWER_55}
+        )
+        assert batches[2][0] == Change(
+            ChangeKind.UPDATE, "t", record_id=FIRST_ID, data={"name": "Mew", "power": POWER_99}
+        )
 
 
 class TestListeners:
@@ -281,6 +287,25 @@ class TestListenerFailure:
         assert not txn.is_active
         assert db.get_table("cards").row_count == TWO_ROWS
         assert "temp" not in db.table_names()
+
+    def test_rollback_after_failed_commit_is_a_no_op(self, tmp_path: Path) -> None:
+        """Rolling back a transaction its failed commit already undid is harmless."""
+        db, _ = _db_with_recorder(tmp_path)
+        db.add_commit_listener(_boom)
+        txn = Transaction(db)
+        txn.get_table("cards").delete(FIRST_ID)
+        with pytest.raises(ListenerBoomError):
+            txn.commit()
+        txn.rollback()
+        assert db.get_table("cards").row_count == TWO_ROWS
+
+    def test_rollback_after_successful_commit_still_raises(self, tmp_path: Path) -> None:
+        """A transaction that really committed cannot be rolled back."""
+        db, _ = _db_with_recorder(tmp_path)
+        txn = Transaction(db)
+        txn.commit()
+        with pytest.raises(TransactionError):
+            txn.rollback()
 
     def test_failed_transaction_frees_the_database(self, tmp_path: Path) -> None:
         """After a failed commit a new transaction can start."""
