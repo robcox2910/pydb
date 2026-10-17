@@ -144,9 +144,11 @@ uv run ruff check .
 uv run pyright src tests
 ```
 
+<!-- docs:start -->
 ## Documentation
 
-Full docs at [robcox2910.github.io/pydb](https://robcox2910.github.io/pydb/)
+Full docs (with kid-friendly explanations of every idea): https://robcox2910.github.io/pydb/
+<!-- docs:end -->
 
 ## Developing alongside a sibling
 
@@ -180,25 +182,31 @@ not whatever is on `main`. To publish a change for them:
    `uv lock --upgrade-package <name>`, and open a pull request so CI checks
    the pair together.
 
+<!-- series:start -->
 ## Related Projects
 
-PyDB is part of an educational series where every layer of the
-computing stack is built from scratch:
+This project is one of a series that builds real systems "from scratch in Python" to teach how they work. See the [series home](https://robcox2910.github.io/) for the full story.
 
-| Project | What It Teaches |
-|---------|----------------|
-| [PyOS](https://github.com/robcox2910/py-os) | Operating systems |
-| [Pebble](https://github.com/robcox2910/pebble-lang) | Compilers and programming languages |
-| [PyStack](https://github.com/robcox2910/pystack) | Full-stack integration |
-| [PyWeb](https://github.com/robcox2910/pyweb) | HTTP web servers |
-| [PyGit](https://github.com/robcox2910/pygit) | Version control |
-| [PyCrypt](https://github.com/robcox2910/pycrypt) | Cryptography |
-| [PyNet](https://github.com/robcox2910/pynet) | Networking |
-| [PySearch](https://github.com/robcox2910/pysearch) | Full-text search |
-| [PyMQ](https://github.com/robcox2910/pymq) | Message queues |
-
-All projects use TDD, comprehensive documentation with real-world
-analogies, and are designed for learners aged 12+.
+| Project | What it teaches | Repository | Docs |
+| --- | --- | --- | --- |
+| PyOS | Operating systems | [py-os](https://github.com/robcox2910/py-os) | [Docs](https://robcox2910.github.io/py-os/) |
+| Pebble | Compilers and programming languages | [pebble-lang](https://github.com/robcox2910/pebble-lang) | [Docs](https://robcox2910.github.io/pebble-lang/) |
+| **PyDB** | **Relational databases** | [pydb](https://github.com/robcox2910/pydb) | [Docs](https://robcox2910.github.io/pydb/) |
+| PyKV | Key-value stores | [pykv](https://github.com/robcox2910/pykv) | [Docs](https://robcox2910.github.io/pykv/) |
+| PyDocDB | Document databases | [pydoc-db](https://github.com/robcox2910/pydoc-db) | [Docs](https://robcox2910.github.io/pydoc-db/) |
+| PyGraphDB | Graph databases | [pygraphdb](https://github.com/robcox2910/pygraphdb) | [Docs](https://robcox2910.github.io/pygraphdb/) |
+| PyTSDB | Time-series databases | [pytsdb](https://github.com/robcox2910/pytsdb) | [Docs](https://robcox2910.github.io/pytsdb/) |
+| PyVecDB | Vector databases | [pyvecdb](https://github.com/robcox2910/pyvecdb) | [Docs](https://robcox2910.github.io/pyvecdb/) |
+| PyColDB | Column-family databases | [pycoldb](https://github.com/robcox2910/pycoldb) | [Docs](https://robcox2910.github.io/pycoldb/) |
+| PyCrypt | Cryptography | [pycrypt](https://github.com/robcox2910/pycrypt) | [Docs](https://robcox2910.github.io/pycrypt/) |
+| PyNet | Computer networking | [pynet](https://github.com/robcox2910/pynet) | [Docs](https://robcox2910.github.io/pynet/) |
+| PyWeb | HTTP web servers | [pyweb](https://github.com/robcox2910/pyweb) | [Docs](https://robcox2910.github.io/pyweb/) |
+| PyGit | Version control | [pygit](https://github.com/robcox2910/pygit) | [Docs](https://robcox2910.github.io/pygit/) |
+| PySearch | Search engines | [pysearch](https://github.com/robcox2910/pysearch) | [Docs](https://robcox2910.github.io/pysearch/) |
+| PyMQ | Message queues | [pymq](https://github.com/robcox2910/pymq) | [Docs](https://robcox2910.github.io/pymq/) |
+| PyLLM | Language models (the brain) | [pyllm](https://github.com/robcox2910/pyllm) | [Docs](https://robcox2910.github.io/pyllm/) |
+| PyStack | Full-stack integration | [pystack](https://github.com/robcox2910/pystack) | [Docs](https://robcox2910.github.io/pystack/) |
+<!-- series:end -->
 
 ## License
 
