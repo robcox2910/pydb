@@ -338,11 +338,27 @@ class Table:
                 self._next_id = change.record_id
             raise
 
+    def replay_change(self, change: Change) -> None:
+        """Redo a journalled row or index change exactly (used by recovery).
+
+        No checks run and nothing is recorded: the change was checked when
+        it first happened. The record keeps its original ID.
+
+        Args:
+            change: The change to redo.
+
+        Raises:
+            PyDBError: If the change is not a complete row or index change.
+            KeyError: If it names a record or index that isn't there.
+
+        """
+        self._apply_change(change)
+
     def _apply_change(self, change: Change) -> None:
         """Apply a row or index change exactly, without checks or recording.
 
-        Used to undo a change whose note was refused, and (later) to replay
-        a journal. Table-level kinds (create/drop table) belong to the
+        Used to undo a change whose note was refused, and (through
+        ``replay_change``) to replay a journal. Table-level kinds (create/drop table) belong to the
         ``Database``.
 
         Args:

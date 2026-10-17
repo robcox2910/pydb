@@ -11,12 +11,20 @@ each change is its own commit; inside a ``Transaction`` the notes wait until
 ``commit()``. A listener runs *before* the commit counts as done: if it
 raises, the change (or the whole transaction) is undone in memory and the
 error is passed on.
+
+A *journalled* database (``Database(path, journal=True)``) also writes each
+commit to ``journal.log`` before the commit counts, so committed work
+survives a crash even without ``save()``. On opening, it rebuilds itself
+from the folder (see ``pydb.durable``).
 """
 
 from pathlib import Path
+from types import TracebackType
 
 from pydb.changes import Change, ChangeKind, CommitListener
+from pydb.durable import JOURNAL_FILE, recover
 from pydb.errors import PyDBError
+from pydb.journal import Journal
 from pydb.query import Query
 from pydb.schema import Schema
 from pydb.storage import StorageEngine
@@ -34,14 +42,50 @@ class Database:
     persistence to a ``StorageEngine``. Call ``save()`` to flush all
     tables to disk, or ``save_table()`` for a single table.
 
+    With ``journal=True`` every commit is written to ``journal.log`` (and,
+    with ``sync=True``, forced onto the disk) before the change returns, and
+    opening the database recovers everything committed: the saved table
+    snapshots are loaded and the journal is replayed on top. Use
+    ``close()`` (or ``with Database(...) as db:``) to release the journal.
+
     Args:
         path: Directory where the database stores its files.
+        journal: Make every commit durable through a journal.
+        sync: With a journal, ``fsync`` every commit (default True). False is
+            faster but a power cut can lose recent commits.
+        checkpoint_bytes: With a journal, the journal size that triggers a
+            checkpoint (default 4 MiB).
+        repair: With a journal, open even if its middle is damaged, keeping
+            the commits before the damage (default False: raise).
+
+    Raises:
+        JournalCorruptError: If the journal is damaged mid-file and *repair*
+            is False.
+        RecoveryError: If the journal doesn't fit the saved tables.
 
     """
 
-    __slots__ = ("_batch", "_dropped", "_listeners", "_path", "_storage", "_tables", "_views")
+    __slots__ = (
+        "_batch",
+        "_checkpoint_bytes",
+        "_dropped",
+        "_journal",
+        "_listeners",
+        "_path",
+        "_storage",
+        "_tables",
+        "_views",
+    )
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        journal: bool = False,
+        sync: bool = True,
+        checkpoint_bytes: int = 4 * 1024 * 1024,
+        repair: bool = False,
+    ) -> None:
         """Create or open a database at the given path."""
         self._path = Path(path)
         self._storage = StorageEngine(data_dir=self._path)
@@ -52,11 +96,40 @@ class Database:
         self._listeners: list[CommitListener] = []
         # Changes waiting for the active transaction to commit (None = no transaction).
         self._batch: list[Change] | None = None
+        self._checkpoint_bytes = checkpoint_bytes
+        self._journal: Journal | None = None
+        if journal:
+            self._journal = Journal(self._path / JOURNAL_FILE, sync=sync)
+            for table in recover(self._storage, self._journal, repair=repair).values():
+                self._adopt(table)
+
+    def __enter__(self) -> Database:
+        """Return the database for use in a ``with`` block."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Close the database at the end of a ``with`` block."""
+        self.close()
+
+    def close(self) -> None:
+        """Release the journal file (does nothing without a journal)."""
+        if self._journal is not None:
+            self._journal.close()
 
     @property
     def path(self) -> Path:
         """Return the database directory path."""
         return self._path
+
+    @property
+    def journalled(self) -> bool:
+        """Return whether commits are written to a journal."""
+        return self._journal is not None
 
     def replace_table(self, table: Table) -> None:
         """Replace a table in the catalog (used by transactions for rollback).
@@ -113,11 +186,19 @@ class Database:
             self._commit([change])
 
     def _commit(self, changes: list[Change]) -> None:
-        """Deliver one commit's changes to every listener (none if empty)."""
+        """Deliver one commit's changes to every listener, then to the journal.
+
+        The journal goes last: once its entry is written the commit is
+        final, so nothing that runs afterwards can fail and undo a commit
+        that is already on disk. A failing append (``JournalWriteError``)
+        undoes the commit like any other failing listener.
+        """
         if not changes:
             return
         for listener in list(self._listeners):
             listener(list(changes))
+        if self._journal is not None:
+            self._journal.append(changes)
 
     def begin_batch(self) -> None:
         """Start holding changes for a transaction (called by ``Transaction``).
@@ -199,6 +280,7 @@ class Database:
         Like every other change, this only reaches the disk when you call
         ``save()`` -- that's when the table's data file is deleted. Quit
         without saving and the table is still there next time.
+        (On a journalled database the drop is durable at once.)
 
         Args:
             name: The table name.
@@ -271,7 +353,12 @@ class Database:
         Each table's file is replaced safely on its own, but a save of
         several tables is not one all-or-nothing step: a crash part-way can
         leave some tables saved and others not.
+
+        On a journalled database this does nothing: every commit is already
+        safe in the journal.
         """
+        if self._journal is not None:
+            return
         for table in self._tables.values():
             self._save_one(table)
         for name in self._dropped:
@@ -290,7 +377,8 @@ class Database:
 
         """
         table = self.get_table(name)
-        self._save_one(table)
+        if self._journal is None:
+            self._save_one(table)
 
     def _save_one(self, table: Table) -> None:
         """Save a single table through the storage engine."""
@@ -308,7 +396,12 @@ class Database:
 
         Any tables already in memory are replaced by the on-disk versions.
 
+        On a journalled database this does nothing: opening it already
+        loaded everything, and the files on disk may be older than the
+        journal.
         """
+        if self._journal is not None:
+            return
         self._dropped.clear()
         for name in self._storage.list_tables():
             self._load_one(name)
@@ -322,10 +415,16 @@ class Database:
         Returns:
             The loaded table.
 
+        On a journalled database this just returns the table already in
+        memory (see ``load()``).
+
         Raises:
-            DatabaseError: If no data file exists for the table.
+            DatabaseError: If no data file exists for the table (or, when
+                journalled, no such table exists).
 
         """
+        if self._journal is not None:
+            return self.get_table(name)
         return self._load_one(name)
 
     def _load_one(self, name: str) -> Table:

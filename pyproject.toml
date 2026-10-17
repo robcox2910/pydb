@@ -128,6 +128,7 @@ max-args = 9
 "tests/**/*.py" = [
     "S101",   # Use of assert
     "SLF001", # Accessing private members in tests is fine
+    "S603",   # Crash tests run our own helper script in a child process
 ]
 "src/pydb/executor.py" = [
     "PLR0911", # Dispatch function has many return statements by design
