@@ -130,6 +130,10 @@ max-args = 9
     "SLF001", # Accessing private members in tests is fine
     "S603",   # Crash tests run our own helper script in a child process
 ]
+"examples/**/*.py" = [
+    "T201",   # Examples talk to the reader with print()
+    "S603",   # The crash example runs itself as a child process
+]
 "src/pydb/executor.py" = [
     "PLR0911", # Dispatch function has many return statements by design
 ]

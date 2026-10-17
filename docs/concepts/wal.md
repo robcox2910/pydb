@@ -47,8 +47,22 @@ Two details make this trustworthy:
   went wrong, so `recover()` stops with a `WALError` instead of quietly
   skipping work that may have mattered.
 
-(PyDB keeps the WAL as a standalone lesson: its tables don't log through
-it yet.)
+## From Lesson to the Real Thing
+
+`pydb.wal` is a small, standalone lesson: its tables don't log through
+it. The real database has its own write-ahead log, called the
+**journal**. Open a database with `Database(path, journal=True)` and every
+commit is written to `journal.log` (and fsynced) before it counts:
+
+- [The Journal](journal.md) -- one checksummed line per commit.
+- [Crash Recovery](crash-recovery.md) -- replaying the journal on open.
+- [Checkpoints](checkpoints.md) -- keeping the journal short.
+- [Torn Writes](torn-writes.md) -- spotting a half-written line.
+
+The journal works the same way as this lesson, with two differences: a
+whole transaction is written as **one** line when it commits (so there are
+no separate BEGIN and COMMIT lines to match up), and the log is trimmed by
+taking a checkpoint rather than by `clear()`.
 
 ## What We Test
 
