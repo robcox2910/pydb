@@ -79,7 +79,7 @@ There's a friendlier version with job runs, dates and times in
 ```
 $ uv run python examples/crash_and_recover.py
 Starting a helper program that writes job runs to a journalled database...
-The helper program crashed (exit code 1) in the middle of job 4.
+The helper program crashed (exit code 9) in the middle of job 4.
 
 Reopening the folder -- recovery reads the journal diary:
   job 1: nightly-backup ran on 2026-10-15, started 2026-10-15T02:00:00Z
@@ -88,6 +88,11 @@ Reopening the folder -- recovery reads the journal diary:
 job 4: never committed, so it's gone
 The next new job run gets ID 4.
 ```
+
+The helper dies with exit code 9 on purpose: a program that hits an
+ordinary error exits with 1, so the demo can tell the planned power cut
+from a real problem. If the helper fails some other way, the demo says so
+and shows its last error lines instead of a recovery story.
 
 ## When the Diary Itself Is Damaged
 

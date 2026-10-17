@@ -1,6 +1,7 @@
 """Check that every example imports cleanly, exposes ``main()`` and runs."""
 
 import importlib.util
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -8,9 +9,11 @@ import pytest
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 EXAMPLE_FILES = sorted(EXAMPLES_DIR.glob("*.py"))
+CRASH_EXAMPLE = EXAMPLES_DIR / "crash_and_recover.py"
+BROKEN_CHILD = "import sys; sys.stderr.write('ModuleNotFoundError: no pydb here\\n'); sys.exit(1)"
 KEY_LINES: dict[str, tuple[str, ...]] = {
     "crash_and_recover": (
-        "The helper program crashed (exit code 1) in the middle of job 4.",
+        "The helper program crashed (exit code 9) in the middle of job 4.",
         "  job 1: nightly-backup ran on 2026-10-15, started 2026-10-15T02:00:00Z",
         "  job 3: send-report ran on 2026-10-17, started 2026-10-17T07:30:00Z",
         "job 4: never committed, so it's gone",
@@ -55,3 +58,37 @@ class TestExamples:
         lines = capsys.readouterr().out.splitlines()
         positions = [lines.index(line) for line in KEY_LINES[path.stem]]
         assert positions == sorted(positions)
+
+
+class TestCrashAndRecover:
+    """The crash demo only tells its story when the helper really crashed."""
+
+    def test_unexpected_child_failure_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Say the helper failed, show what it said, and skip the recovery story."""
+        example = load_example(CRASH_EXAMPLE)
+
+        def broken_command(_folder: Path) -> list[str]:
+            """Return a helper command that fails the ordinary way (exit code 1)."""
+            return [sys.executable, "-c", BROKEN_CHILD]
+
+        monkeypatch.setattr(example, "child_command", broken_command)
+        example.main()
+        out = capsys.readouterr().out
+        assert "stopped unexpectedly (exit code 1)" in out
+        assert "  ModuleNotFoundError: no pydb here" in out.splitlines()
+        assert "crashed (exit code" not in out
+        assert "Reopening" not in out
+
+    def test_a_surviving_job_4_is_called_out(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Flag it loudly if the unfinished job somehow survived."""
+        example = load_example(CRASH_EXAMPLE)
+        with example.Database(tmp_path, journal=True) as db:
+            runs = db.create_table(example.TABLE, example.runs_schema())
+            for job, run_date, started in (*example.COMMITTED_RUNS, example.UNFINISHED_RUN):
+                runs.insert({"job": job, "run_date": run_date, "started": started})
+        example.show_recovery(tmp_path)
+        assert "job 4: survived -- that should never happen!" in capsys.readouterr().out
