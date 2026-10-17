@@ -365,6 +365,18 @@ class TestInterruptAfterCommitPoint:
         abandon(db)
         assert len(_rows(_open(tmp_path), "cards")) == 1
 
+    def test_drop_table_stands(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep a table dropped for good when the drop reached the journal before Ctrl-C."""
+        db = _open(tmp_path)
+        db.create_table("cards", _schema())
+        monkeypatch.setattr(Checkpointer, "committed", _interrupt_after_append)
+        with pytest.raises(KeyboardInterrupt):
+            db.drop_table("cards")
+        monkeypatch.undo()
+        assert db.table_names() == []
+        abandon(db)
+        assert _open(tmp_path).table_names() == []
+
     def test_transaction_stands(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Keep the committed rows, end the transaction and hand the lock back."""
         db = _open(tmp_path)

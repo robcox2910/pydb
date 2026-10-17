@@ -16,7 +16,9 @@ returns. The database then adds ``COMMITTED_NOTE`` to that exception
 ``is_committed`` first and leaves it alone.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from typing import Protocol
 
 from pydb.changes import Change, CommitListener
 
@@ -37,6 +39,35 @@ def is_committed(exc: BaseException) -> bool:
     """Return whether *exc* arrived after its commit was already durable."""
     notes: list[str] = getattr(exc, "__notes__", [])
     return COMMITTED_NOTE in notes
+
+
+class Journalled(Protocol):
+    """Anything that knows the LSN of the newest commit in its journal."""
+
+    @property
+    def last_lsn(self) -> int:
+        """Return the LSN of the newest journalled commit."""
+        ...
+
+
+@contextmanager
+def commit_point(store: Journalled | None) -> Iterator[None]:
+    """Mark an exception that arrives after the journal append as ``is_committed``.
+
+    Wrap a commit in this: if anything raises once the journal's last LSN
+    has moved on, the commit is already on disk, so the exception gets
+    ``COMMITTED_NOTE`` and the caller keeps the change instead of undoing
+    it. (The window left is the few steps inside ``Journal.append`` between
+    the ``fsync`` and counting the entry.) Without a journal (*store* is
+    None) nothing is marked.
+    """
+    before = store.last_lsn if store is not None else 0
+    try:
+        yield
+    except BaseException as exc:
+        if store is not None and store.last_lsn > before:
+            mark_committed(exc)
+        raise
 
 
 class CommitRouter:

@@ -26,14 +26,13 @@ so threads take turns (see ``pydb.locking`` and ``pydb.transaction``).
 import logging
 import threading
 import weakref
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import TracebackType
 
 from pydb.changes import Change, ChangeKind, CommitListener
 from pydb.checkpoint import is_journalled_folder
-from pydb.commits import CommitRouter, is_committed, mark_committed
+from pydb.commits import CommitRouter, commit_point, is_committed
 from pydb.durable_store import JournalStore
 from pydb.errors import PyDBError
 from pydb.locking import LockType, lock_public_methods
@@ -338,25 +337,8 @@ class Database:
         """Commit *change* now, or keep it for the active transaction."""
         if not self._commits.batching:  # (a held change is checked at commit)
             self._live_store()  # a closed journalled database refuses changes
-        with self._commit_point():
+        with commit_point(self._store):
             self._commits.route(change, self._write_journal)
-
-    @contextmanager
-    def _commit_point(self) -> Iterator[None]:
-        """Mark an exception that arrives after the journal append as ``is_committed``.
-
-        Then the caller keeps the change instead of undoing a commit that is
-        already on disk. (The window left is the few steps inside
-        ``Journal.append`` between the ``fsync`` and counting the entry.)
-        """
-        store = self._store
-        before = store.last_lsn if store is not None else 0
-        try:
-            yield
-        except BaseException as exc:
-            if store is not None and store.last_lsn > before:
-                mark_committed(exc)
-            raise
 
     def _write_journal(self, changes: Sequence[Change]) -> None:
         """Append a commit to the journal, if any: the commit point (runs last)."""
@@ -378,7 +360,7 @@ class Database:
     def commit_batch(self) -> None:
         """Deliver the held changes as one commit, then stop holding (``Transaction``)."""
         self._live_store()
-        with self._commit_point():
+        with commit_point(self._store):
             self._commits.finish(self._write_journal)
 
     def discard_batch(self) -> None:
