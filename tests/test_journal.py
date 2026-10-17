@@ -315,6 +315,31 @@ class TestWriteFailure:
             journal.append(_small(7))
         self._check(path, journal, good)
 
+    @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+    def test_interrupt_is_passed_on_unchanged(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        interrupt: type[BaseException],
+    ) -> None:
+        """Cut back and refuse more appends, but re-raise Ctrl-C/exit as itself."""
+        path = tmp_path / "j"
+        journal, good = self._prepare(path)
+        real = os.fsync
+        calls: list[int] = []
+
+        def interrupted(fd: int) -> None:
+            if not calls:
+                calls.append(fd)
+                raise interrupt
+            real(fd)
+
+        monkeypatch.setattr(os, "fsync", interrupted)
+        with pytest.raises(interrupt):
+            journal.append(_small(7))
+        assert journal.failed
+        self._check(path, journal, good)
+
     def test_short_write(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Roll back a half-written line."""
         path = tmp_path / "j"

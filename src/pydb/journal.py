@@ -74,6 +74,16 @@ class JournalWriteError(PyDBError):
     After one failed write the journal refuses every later append, so the
     database refuses every later commit, until it is reopened (or a
     checkpoint starts a fresh journal).
+
+    The commit is undone in memory and the half-written line is cut off
+    the file. One case stays *in doubt*: if the ``fsync`` failed **and**
+    cutting the line off failed too, the whole line may already be on the
+    disk -- so after a crash, recovery could bring back a commit you were
+    told had failed. A clean ``checkpoint()`` or ``close()`` starts a fresh
+    journal and removes it for good.
+
+    An interrupt (``KeyboardInterrupt`` or ``SystemExit``) during a write
+    gets the same clean-up, but is passed on as itself, not as this error.
     """
 
 
@@ -351,6 +361,8 @@ class Journal:
                     self._dir_synced = True
         except BaseException as exc:
             self._fail()
+            if not isinstance(exc, Exception):
+                raise  # Ctrl-C (KeyboardInterrupt) or SystemExit: pass it on as itself
             msg = f"could not write the journal: {exc}"
             raise JournalWriteError(msg) from exc
         self._size += len(line)
