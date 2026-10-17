@@ -56,6 +56,11 @@ class UniqueRegister:
         # value -> further record IDs holding an equal value (only clashing data).
         self._extra: dict[str, dict[Value, set[int]]] = {column: {} for column in self._first}
 
+    @property
+    def column_names(self) -> tuple[str, ...]:
+        """Return the registered column names."""
+        return tuple(self._first)
+
     def is_taken(
         self, column: str, value: Value | None, exclude_record_id: int | None = None
     ) -> bool:
