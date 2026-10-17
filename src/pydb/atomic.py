@@ -49,10 +49,10 @@ def atomic_write_text(path: Path, text: str) -> None:
     except BaseException:
         temp_path.unlink(missing_ok=True)  # don't leave the scrap sheet lying around
         raise
-    _sync_folder(path.parent)
+    sync_folder(path.parent)
 
 
-def _sync_folder(folder: Path) -> None:
+def sync_folder(folder: Path) -> None:
     """Make the swap itself durable by syncing the folder's list of files.
 
     Some systems (like Windows) can't sync a folder; there the swap is

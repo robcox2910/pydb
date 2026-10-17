@@ -44,6 +44,7 @@ off the file on disk). An unreadable entry with a valid one after it means
 damage in the middle of the diary, and raises ``JournalCorruptError``.
 """
 
+import contextlib
 import json
 import os
 import zlib
@@ -52,7 +53,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
-from pydb.atomic import atomic_write_text
+from pydb.atomic import atomic_write_text, sync_folder
 from pydb.changes import Change, ChangeKind
 from pydb.errors import PyDBError
 from pydb.record import Value
@@ -65,6 +66,10 @@ _TS_TAG = "$ts"
 _LINE_PARTS = 3
 
 type Entry = tuple[int, list[Change]]
+
+
+class JournalWriteError(PyDBError):
+    """Raise when a write to the journal failed; reopen the journal to go on."""
 
 
 class JournalCorruptError(PyDBError):
@@ -168,7 +173,7 @@ def _parse_line(line: bytes) -> Entry | None:
             return None
         obj = json.loads(body)
         return int(obj["lsn"]), [_decode_change(c) for c in obj["changes"]]
-    except ValueError, KeyError, TypeError, IndexError:
+    except ValueError, KeyError, TypeError, IndexError, AttributeError:
         return None
 
 
@@ -236,6 +241,8 @@ class Journal:
         self._file: BinaryIO | None = None
         self._last_lsn: int | None = None
         self._size = 0
+        self._failed = False
+        self._dir_synced = True
 
     def _raw(self) -> bytes:
         """Return the file's bytes, or nothing if it doesn't exist."""
@@ -313,17 +320,43 @@ class Journal:
             The LSN given to the entry.
 
         """
+        if self._failed:
+            msg = "an earlier write failed; reopen the journal"
+            raise JournalWriteError(msg)
         lsn = self.last_lsn + 1
         line = encode_entry(lsn, changes)
-        if self._file is None:
-            self._file = self._path.open("ab")
-        self._file.write(line)
-        self._file.flush()
-        if self._sync:
-            os.fsync(self._file.fileno())
+        try:
+            if self._file is None:
+                self._dir_synced = self._path.exists()
+                self._file = self._path.open("ab")
+            self._file.write(line)
+            self._file.flush()
+            if self._sync:
+                os.fsync(self._file.fileno())
+                if not self._dir_synced:
+                    sync_folder(self._path.parent)
+                    self._dir_synced = True
+        except BaseException as exc:
+            self._fail()
+            msg = f"could not write the journal: {exc}"
+            raise JournalWriteError(msg) from exc
         self._size += len(line)
         self._last_lsn = lsn
         return lsn
+
+    def _fail(self) -> None:
+        """Undo a failed append: cut back to the last good size and refuse more writes.
+
+        We never retry ``fsync`` on the same handle -- after a failure the
+        disk's state is unknown, so the safe move is to reopen and re-read.
+        """
+        self._failed = True
+        with contextlib.suppress(OSError):
+            self._close_file()
+        with contextlib.suppress(OSError), self._path.open("r+b") as handle:
+            handle.truncate(self._size)
+            handle.flush()
+            os.fsync(handle.fileno())
 
     def read(self, *, after: int = 0, repair: bool = False) -> list[Entry]:
         """Return the entries with an LSN above *after*.
@@ -349,6 +382,9 @@ class Journal:
                 append gets ``start_after + 1``.
 
         """
+        if start_after < self.last_lsn:
+            msg = f"start_after {start_after} is below last LSN {self.last_lsn}"
+            raise ValueError(msg)
         self._close_file()
         header = _HEADER_PREFIX + b"%d\n" % start_after
         atomic_write_text(self._path, header.decode("ascii"))

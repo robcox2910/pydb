@@ -1,13 +1,21 @@
 """Tests for the checksummed journal."""
 
 import os
+import zlib
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from pydb.changes import Change, ChangeKind
-from pydb.journal import Journal, JournalCorruptError, decode_entries, encode_entry
+from pydb.journal import (
+    Journal,
+    JournalCorruptError,
+    JournalWriteError,
+    decode_entries,
+    encode_entry,
+)
 from pydb.schema import Column, Schema
 from pydb.serializer import serialize_schema
 from pydb.types import DataType
@@ -17,6 +25,9 @@ _TS = datetime(2026, 10, 17, 12, 30, 45, 123456, tzinfo=UTC)
 _DAY = date(2026, 10, 17)
 _ROW_ID = 7
 _START = 41
+_GAP_LINE = 3
+_EIO = 5
+_ENOSPC = 28
 
 
 def _all_changes() -> list[Change]:
@@ -103,7 +114,7 @@ class TestTornTail:
             assert reopened.last_lsn == _ENTRY_COUNT - 1
             reopened.close()
 
-    def test_lsn_gap_at_end_is_torn(self) -> None:
+    def test_repeated_lsn_at_end_is_torn(self) -> None:
         """Treat a repeated LSN at the end as a torn tail."""
         data = encode_entry(1, _small(1)) + encode_entry(1, _small(2))
         entries, valid = decode_entries(data)
@@ -191,9 +202,9 @@ class TestJournal:
         reopened = Journal(path)
         assert reopened.last_lsn == _START + 1
         assert [lsn for lsn, _ in reopened.read()] == [_START + 1]
-        reopened.rotate(_START)
+        reopened.rotate(_START + 1)
         reopened.close()
-        assert Journal(path).last_lsn == _START
+        assert Journal(path).last_lsn == _START + 1
 
     def test_bad_header(self, tmp_path: Path) -> None:
         """Reject a damaged header."""
@@ -211,8 +222,145 @@ class TestJournal:
     ) -> None:
         """Call fsync per append only when sync is on."""
         journal = Journal(tmp_path / "j", sync=sync)
+        journal.append(_small(1))  # the first append also syncs the folder
         calls: list[int] = []
         monkeypatch.setattr(os, "fsync", calls.append)
-        journal.append(_small(1))
+        journal.append(_small(2))
         assert len(calls) == expected
+        journal.close()
+
+
+def _join(*lsns: int) -> bytes:
+    """Encode one small entry per LSN given."""
+    return b"".join(encode_entry(n, _small(n)) for n in lsns)
+
+
+class TestLsnOrder:
+    """Check gaps and repeats."""
+
+    def test_gap_in_middle_is_corrupt(self, tmp_path: Path) -> None:
+        """Report the first entry after the gap; no header, so line 3."""
+        path = tmp_path / "j"
+        path.write_bytes(_join(1, 2, 4, 5))
+        with pytest.raises(JournalCorruptError) as info:
+            Journal(path).read()
+        assert info.value.line == _GAP_LINE
+
+    def test_gap_in_middle_after_header(self, tmp_path: Path) -> None:
+        """Count the header as line 1, so the same gap is line 4."""
+        path = tmp_path / "j"
+        path.write_bytes(b"PYDBJ1 0\n" + _join(1, 2, 4, 5))
+        with pytest.raises(JournalCorruptError) as info:
+            Journal(path).read()
+        assert info.value.line == _GAP_LINE + 1
+
+    def test_repeat_in_middle_is_corrupt(self, tmp_path: Path) -> None:
+        """Treat a repeated LSN with entries after it as damage."""
+        path = tmp_path / "j"
+        path.write_bytes(_join(1, 2, 2, 3))
+        with pytest.raises(JournalCorruptError) as info:
+            Journal(path).read()
+        assert info.value.line == _GAP_LINE
+
+    def test_gap_at_end_is_torn(self, tmp_path: Path) -> None:
+        """Truncate a gapped final entry."""
+        path = tmp_path / "j"
+        good = _join(1, 2)
+        path.write_bytes(good + _join(4))
+        assert [lsn for lsn, _ in Journal(path).read()] == [1, 2]
+        assert path.read_bytes() == good
+
+    def test_non_dict_change_is_unreadable(self) -> None:
+        """Treat a change that is not an object as a bad line."""
+        body = b'{"lsn":1,"changes":[5]}'
+        line = b"%d %08x %s\n" % (len(body), zlib.crc32(body), body)
+        assert decode_entries(line) == ([], 0)
+
+
+class TestWriteFailure:
+    """Check that failed appends never corrupt the journal."""
+
+    def _prepare(self, path: Path) -> tuple[Journal, int]:
+        """Append three entries and return the journal and the good size."""
+        journal = Journal(path)
+        for n in range(_ENTRY_COUNT):
+            journal.append(_small(n))
+        return journal, path.stat().st_size
+
+    def _check(self, path: Path, journal: Journal, good: int) -> None:
+        """Assert a failed journal refuses writes and reopens cleanly."""
+        with pytest.raises(JournalWriteError):
+            journal.append(_small(8))
+        assert path.stat().st_size == good
+        reopened = Journal(path)
+        assert [lsn for lsn, _ in reopened.read()] == [1, 2, 3]
+        assert reopened.append(_small(9)) == _ENTRY_COUNT + 1
+        reopened.close()
+
+    def test_fsync_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Roll back and refuse further appends after an fsync error."""
+        path = tmp_path / "j"
+        journal, good = self._prepare(path)
+        real = os.fsync
+        calls: list[int] = []
+
+        def flaky(fd: int) -> None:
+            if not calls:
+                calls.append(fd)
+                raise OSError(_EIO, "boom")
+            real(fd)
+
+        monkeypatch.setattr(os, "fsync", flaky)
+        with pytest.raises(JournalWriteError):
+            journal.append(_small(7))
+        self._check(path, journal, good)
+
+    def test_short_write(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Roll back a half-written line."""
+        path = tmp_path / "j"
+        journal, good = self._prepare(path)
+        real_file: Any = journal._file
+        line = encode_entry(_ENTRY_COUNT + 1, _small(7))
+
+        class Half:
+            """File wrapper that writes half a line and then fails."""
+
+            def write(self, data: bytes) -> int:
+                """Write half of *data*, then raise."""
+                real_file.write(data[: len(line) // 2])
+                real_file.flush()
+                raise OSError(_ENOSPC, "full")
+
+            def __getattr__(self, name: str) -> Any:
+                """Delegate everything else."""
+                return getattr(real_file, name)
+
+        monkeypatch.setattr(journal, "_file", Half())
+        with pytest.raises(JournalWriteError):
+            journal.append(_small(7))
+        self._check(path, journal, good)
+
+    def test_new_file_syncs_directory_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sync the parent folder after the first append only."""
+        calls: list[Path] = []
+        monkeypatch.setattr("pydb.journal.sync_folder", calls.append)
+        journal = Journal(tmp_path / "j")
+        journal.append(_small(1))
+        journal.append(_small(2))
+        assert calls == [tmp_path]
+        journal.close()
+        again = Journal(tmp_path / "j")
+        again.append(_small(3))
+        assert calls == [tmp_path]
+        again.close()
+
+    def test_rotate_below_last_lsn_rejected(self, tmp_path: Path) -> None:
+        """Refuse to rotate backwards."""
+        journal = Journal(tmp_path / "j")
+        journal.append(_small(1))
+        journal.append(_small(2))
+        with pytest.raises(ValueError, match="below"):
+            journal.rotate(1)
         journal.close()
