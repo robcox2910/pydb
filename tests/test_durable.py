@@ -88,13 +88,14 @@ class TestDurableCommits:
 
     def test_transaction_is_one_entry(self, tmp_path: Path) -> None:
         """Write a whole transaction as a single journal entry."""
-        with _open(tmp_path) as db:
-            db.create_table("cards", _schema())
-            txn = Transaction(db)
-            cards = txn.get_table("cards")
-            cards.insert({"name": "A", "power": 1})
-            cards.insert({"name": "B", "power": 2})
-            txn.commit()
+        db = _open(tmp_path)  # no close(): that would checkpoint the journal away
+        db.create_table("cards", _schema())
+        txn = Transaction(db)
+        cards = txn.get_table("cards")
+        cards.insert({"name": "A", "power": 1})
+        cards.insert({"name": "B", "power": 2})
+        txn.commit()
+        del db
         entries = Journal(tmp_path / JOURNAL_FILE).read()
         assert len(entries) == _TWO_ENTRIES
         assert [c.kind for c in entries[1][1]] == [ChangeKind.INSERT, ChangeKind.INSERT]
@@ -256,10 +257,11 @@ class TestDamagedJournal:
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Raise on damage before good entries; repair keeps the entries before it."""
-        with _open(tmp_path) as db:
-            cards = db.create_table("cards", _schema())
-            cards.insert({"name": "A", "power": 1})
-            cards.insert({"name": "B", "power": 2})
+        db = _open(tmp_path)  # no close(): that would checkpoint the journal away
+        cards = db.create_table("cards", _schema())
+        cards.insert({"name": "A", "power": 1})
+        cards.insert({"name": "B", "power": 2})
+        del db
         path = tmp_path / JOURNAL_FILE
         lines = path.read_bytes().split(b"\n")
         lines[1] = lines[1].replace(b"A", b"Z")
@@ -324,7 +326,7 @@ class TestJournalFailure:
 
 
 class TestLifecycle:
-    """Opening, closing and the no-op load/save of a journalled database."""
+    """Opening, closing, and load/save on a journalled database."""
 
     def test_load_is_a_no_op(self, tmp_path: Path) -> None:
         """Keep the recovered state when load() is called."""
@@ -334,8 +336,8 @@ class TestLifecycle:
         assert len(_rows(db, "cards")) == 1
         assert db.load_table("cards") is db.get_table("cards")
 
-    def test_save_writes_no_snapshots(self, tmp_path: Path) -> None:
-        """Leave durability to the journal: save() writes no table files."""
+    def test_save_writes_no_old_style_snapshots(self, tmp_path: Path) -> None:
+        """Checkpoint on save(): no ``<table>.json`` beside the journal."""
         with _open(tmp_path) as db:
             db.create_table("cards", _schema()).insert({"name": "A", "power": 1})
             db.save()

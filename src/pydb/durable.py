@@ -9,8 +9,13 @@ it did the moment before the lights went out.
 
 That's what ``Database(path, journal=True)`` does when it opens:
 
-1. Load every table snapshot (``<table>.json``) already in the folder.
-2. Read the journal (``journal.log``) and *replay* each committed change.
+1. Load the table snapshots the last checkpoint lists (see
+   ``pydb.checkpoint``; an old folder's ``<table>.json`` files if there is
+   no checkpoint yet).
+2. Read the journal (``journal.log``) and *replay* each committed change
+   made after that checkpoint.
+
+This module holds the building blocks; ``pydb.checkpoint`` puts them together.
 
 Replaying is careful in three ways:
 
@@ -33,7 +38,7 @@ from collections.abc import Iterable
 
 from pydb.changes import Change, ChangeKind
 from pydb.errors import PyDBError
-from pydb.journal import Journal, JournalCorruptError
+from pydb.journal import Entry, Journal, JournalCorruptError
 from pydb.storage import StorageEngine
 from pydb.table import Table
 
@@ -70,8 +75,8 @@ def load_snapshots(storage: StorageEngine) -> dict[str, Table]:
     return tables
 
 
-def read_journal(journal: Journal, *, after: int = 0, repair: bool = False) -> list[Change]:
-    """Return every committed change after LSN *after*, oldest first.
+def read_entries(journal: Journal, *, after: int = 0, repair: bool = False) -> list[Entry]:
+    """Return every committed entry ``(lsn, changes)`` after LSN *after*, oldest first.
 
     Args:
         journal: The journal to read.
@@ -84,13 +89,12 @@ def read_journal(journal: Journal, *, after: int = 0, repair: bool = False) -> l
 
     """
     try:
-        entries = journal.read(after=after)
+        return journal.read(after=after)
     except JournalCorruptError as exc:
         if not repair:
             raise
         _log.warning("journal damaged (%s); repair keeps the entries before it", exc)
-        entries = journal.read(after=after, repair=True)
-    return [change for _lsn, changes in entries for change in changes]
+        return journal.read(after=after, repair=True)
 
 
 def replay(tables: dict[str, Table], changes: Iterable[Change]) -> None:
@@ -131,23 +135,3 @@ def _replay_one(tables: dict[str, Table], change: Change) -> None:
     except (KeyError, PyDBError) as exc:
         msg = f"Cannot replay {change.kind.value} on table {name!r}: {exc!r}"
         raise RecoveryError(msg) from exc
-
-
-def recover(
-    storage: StorageEngine, journal: Journal, *, after: int = 0, repair: bool = False
-) -> dict[str, Table]:
-    """Rebuild every table: load the snapshots, then replay the journal.
-
-    Args:
-        storage: The storage engine for the database folder.
-        journal: The database's journal.
-        after: The LSN the snapshots already cover (entries up to it are skipped).
-        repair: Passed to ``read_journal``.
-
-    Returns:
-        The recovered tables by name. They belong to no database yet.
-
-    """
-    tables = load_snapshots(storage)
-    replay(tables, read_journal(journal, after=after, repair=repair))
-    return tables

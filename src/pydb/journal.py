@@ -69,7 +69,12 @@ type Entry = tuple[int, list[Change]]
 
 
 class JournalWriteError(PyDBError):
-    """Raise when a write to the journal failed; reopen the journal to go on."""
+    """Raise when a write to the journal failed.
+
+    After one failed write the journal refuses every later append, so the
+    database refuses every later commit, until it is reopened (or a
+    checkpoint starts a fresh journal).
+    """
 
 
 class JournalCorruptError(PyDBError):
@@ -304,6 +309,11 @@ class Journal:
         return cast(int, self._last_lsn)
 
     @property
+    def failed(self) -> bool:
+        """Whether an append failed (appends are refused until ``rotate`` or reopen)."""
+        return self._failed
+
+    @property
     def size_bytes(self) -> int:
         """The journal's size on disk in bytes."""
         if self._last_lsn is None:
@@ -321,7 +331,10 @@ class Journal:
 
         """
         if self._failed:
-            msg = "an earlier write failed; reopen the journal"
+            msg = (
+                "an earlier journal write failed, so no more commits are accepted "
+                "until the database is reopened (or checkpointed)"
+            )
             raise JournalWriteError(msg)
         lsn = self.last_lsn + 1
         line = encode_entry(lsn, changes)
@@ -377,19 +390,24 @@ class Journal:
     def rotate(self, start_after: int) -> None:
         """Atomically replace the journal with an empty one.
 
+        The old file is never read, so a damaged journal can be rotated
+        away. A fresh, fully synced file also ends the "an earlier write
+        failed" state: appends work again.
+
         Args:
             start_after: The LSN already covered by a checkpoint; the next
                 append gets ``start_after + 1``.
 
         """
-        if start_after < self.last_lsn:
-            msg = f"start_after {start_after} is below last LSN {self.last_lsn}"
+        if self._last_lsn is not None and start_after < self._last_lsn:
+            msg = f"start_after {start_after} is below last LSN {self._last_lsn}"
             raise ValueError(msg)
         self._close_file()
         header = _HEADER_PREFIX + b"%d\n" % start_after
         atomic_write_text(self._path, header.decode("ascii"))
         self._last_lsn = start_after
         self._size = len(header)
+        self._failed = False
 
     def close(self) -> None:
         """Close the file."""

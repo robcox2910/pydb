@@ -364,3 +364,31 @@ class TestWriteFailure:
         with pytest.raises(ValueError, match="below"):
             journal.rotate(1)
         journal.close()
+
+    def test_rotate_clears_a_failed_append(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Accept appends again once rotate wrote a fresh journal."""
+        journal, _good = self._prepare(tmp_path / "j")
+
+        def failing_fsync(fd: int) -> None:
+            """Fail every call."""
+            raise OSError(_EIO, f"I/O error on {fd}")
+
+        monkeypatch.setattr(os, "fsync", failing_fsync)
+        with pytest.raises(JournalWriteError):
+            journal.append(_small(8))
+        assert journal.failed
+        monkeypatch.undo()
+        journal.rotate(_ENTRY_COUNT)
+        assert not journal.failed
+        assert journal.append(_small(9)) == _ENTRY_COUNT + 1
+        journal.close()
+
+    def test_rotate_never_reads_a_damaged_journal(self, tmp_path: Path) -> None:
+        """Rotate away a journal whose middle is damaged without raising."""
+        path = tmp_path / "j"
+        good = encode_entry(1, _small(1))
+        path.write_bytes(b"garbage\n" + good)
+        Journal(path).rotate(_START)
+        assert Journal(path).last_lsn == _START

@@ -15,20 +15,25 @@ error is passed on.
 A *journalled* database (``Database(path, journal=True)``) also writes each
 commit to ``journal.log`` before the commit counts, so committed work
 survives a crash even without ``save()``. On opening, it rebuilds itself
-from the folder (see ``pydb.durable``).
+from the folder, and now and then it takes a *checkpoint* so the journal
+stays short (see ``pydb.durable`` and ``pydb.checkpoint``).
 """
 
+import logging
 from pathlib import Path
 from types import TracebackType
 
 from pydb.changes import Change, ChangeKind, CommitListener
-from pydb.durable import JOURNAL_FILE, recover
+from pydb.checkpoint import Checkpointer, is_journalled_folder
+from pydb.durable import JOURNAL_FILE
 from pydb.errors import PyDBError
 from pydb.journal import Journal
 from pydb.query import Query
 from pydb.schema import Schema
 from pydb.storage import StorageEngine
 from pydb.table import Table
+
+_log = logging.getLogger(__name__)
 
 
 class DatabaseError(PyDBError):
@@ -45,8 +50,13 @@ class Database:
     With ``journal=True`` every commit is written to ``journal.log`` (and,
     with ``sync=True``, forced onto the disk) before the change returns, and
     opening the database recovers everything committed: the saved table
-    snapshots are loaded and the journal is replayed on top. Use
-    ``close()`` (or ``with Database(...) as db:``) to release the journal.
+    snapshots are loaded and the journal is replayed on top. A
+    ``checkpoint()`` (also run by ``save()``, by ``close()``, and after a
+    commit that makes the journal bigger than *checkpoint_bytes*) writes the
+    changed tables and starts a fresh journal. Use ``close()`` (or
+    ``with Database(...) as db:``) to finish. If one journal write fails
+    (``JournalWriteError``), every later commit is refused too until the
+    database is reopened or a ``checkpoint()`` succeeds.
 
     Args:
         path: Directory where the database stores its files.
@@ -62,12 +72,16 @@ class Database:
         JournalCorruptError: If the journal is damaged mid-file and *repair*
             is False.
         RecoveryError: If the journal doesn't fit the saved tables.
+        DatabaseError: If *journal* is False but the folder holds a
+            journalled database.
 
     """
 
     __slots__ = (
         "_batch",
         "_checkpoint_bytes",
+        "_checkpointer",
+        "_crash_after",
         "_dropped",
         "_journal",
         "_listeners",
@@ -88,6 +102,9 @@ class Database:
     ) -> None:
         """Create or open a database at the given path."""
         self._path = Path(path)
+        if not journal and is_journalled_folder(self._path):
+            msg = f"{self._path} holds a journalled database; open it with journal=True"
+            raise DatabaseError(msg)
         self._storage = StorageEngine(data_dir=self._path)
         self._tables: dict[str, Table] = {}
         self._views: dict[str, Query] = {}
@@ -98,9 +115,13 @@ class Database:
         self._batch: list[Change] | None = None
         self._checkpoint_bytes = checkpoint_bytes
         self._journal: Journal | None = None
+        self._checkpointer: Checkpointer | None = None
+        # Test hook: a checkpoint step after which the process dies (see pydb.checkpoint).
+        self._crash_after: str | None = None
         if journal:
             self._journal = Journal(self._path / JOURNAL_FILE, sync=sync)
-            for table in recover(self._storage, self._journal, repair=repair).values():
+            self._checkpointer = Checkpointer(self._path, self._journal)
+            for table in self._checkpointer.recover(repair=repair).values():
                 self._adopt(table)
 
     def __enter__(self) -> Database:
@@ -117,9 +138,53 @@ class Database:
         self.close()
 
     def close(self) -> None:
-        """Release the journal file (does nothing without a journal)."""
-        if self._journal is not None:
+        """Take a checkpoint and release the journal (does nothing without one).
+
+        Inside an open transaction the checkpoint is skipped: the committed
+        work is already safe in the journal.
+        """
+        if self._journal is None:
+            return
+        try:
+            if self._batch is None:
+                self.checkpoint()
+        finally:
             self._journal.close()
+
+    def checkpoint(self) -> None:
+        """Write every table changed since the last checkpoint, then start a fresh journal.
+
+        Snapshots of the changed tables are written first, then
+        ``checkpoint.json``, then the journal is replaced by an empty one;
+        a crash between any two steps still reopens to exactly the last
+        committed state (see ``pydb.checkpoint``). Files of dropped tables
+        are deleted.
+
+        Raises:
+            DatabaseError: Without a journal, or inside an open transaction.
+
+        """
+        if self._checkpointer is None:
+            msg = "checkpoint() needs a journalled database (journal=True)"
+            raise DatabaseError(msg)
+        if self._batch is not None:
+            msg = "Cannot checkpoint inside an open transaction"
+            raise DatabaseError(msg)
+        self._checkpointer.checkpoint(self._tables, crash_after=self._crash_after)
+        self._dropped.clear()
+
+    def _maybe_checkpoint(self) -> None:
+        """Checkpoint if the journal grew past ``checkpoint_bytes`` (errors are logged).
+
+        The commit before this is already durable, so a failure here must
+        not undo it: it is logged and the next commit tries again.
+        """
+        if self._journal is None or self._journal.size_bytes <= self._checkpoint_bytes:
+            return
+        try:
+            self.checkpoint()
+        except (OSError, PyDBError) as exc:
+            _log.warning("automatic checkpoint failed (%s); the journal keeps everything", exc)
 
     @property
     def path(self) -> Path:
@@ -157,7 +222,9 @@ class Database:
         Listeners must treat the changes as read-only -- never mutate
         ``Change.data``. With several listeners, they run in the order
         added, so an earlier listener may already have seen a batch that a
-        later listener's failure then undid.
+        later listener's failure then undid. On a journalled database the
+        journal write comes after every listener, so a listener may also see
+        a batch that a failed journal write then undoes.
 
         Args:
             listener: A function taking a list of ``Change`` notes.
@@ -184,6 +251,7 @@ class Database:
             self._batch.append(change)
         else:
             self._commit([change])
+            self._maybe_checkpoint()
 
     def _commit(self, changes: list[Change]) -> None:
         """Deliver one commit's changes to every listener, then to the journal.
@@ -197,8 +265,8 @@ class Database:
             return
         for listener in list(self._listeners):
             listener(list(changes))
-        if self._journal is not None:
-            self._journal.append(changes)
+        if self._journal is not None and self._checkpointer is not None:
+            self._checkpointer.committed(self._journal.append(changes), changes)
 
     def begin_batch(self) -> None:
         """Start holding changes for a transaction (called by ``Transaction``).
@@ -220,6 +288,7 @@ class Database:
         """
         self._commit(self._batch or [])
         self._batch = None
+        self._maybe_checkpoint()
 
     def discard_batch(self) -> None:
         """Throw away the held changes and stop holding (``Transaction.rollback``)."""
@@ -280,7 +349,8 @@ class Database:
         Like every other change, this only reaches the disk when you call
         ``save()`` -- that's when the table's data file is deleted. Quit
         without saving and the table is still there next time.
-        (On a journalled database the drop is durable at once.)
+        (On a journalled database the drop is durable at once, and the
+        table's snapshot file goes at the next checkpoint.)
 
         Args:
             name: The table name.
@@ -354,10 +424,11 @@ class Database:
         several tables is not one all-or-nothing step: a crash part-way can
         leave some tables saved and others not.
 
-        On a journalled database this does nothing: every commit is already
-        safe in the journal.
+        On a journalled database this takes a ``checkpoint()`` instead
+        (every commit is already safe in the journal).
         """
         if self._journal is not None:
+            self.checkpoint()
             return
         for table in self._tables.values():
             self._save_one(table)
@@ -367,7 +438,7 @@ class Database:
         self._dropped.clear()
 
     def save_table(self, name: str) -> None:
-        """Save a single table to disk.
+        """Save a single table to disk (a ``checkpoint()`` on a journalled database).
 
         Args:
             name: The table name.
@@ -379,6 +450,8 @@ class Database:
         table = self.get_table(name)
         if self._journal is None:
             self._save_one(table)
+        else:
+            self.checkpoint()
 
     def _save_one(self, table: Table) -> None:
         """Save a single table through the storage engine."""
