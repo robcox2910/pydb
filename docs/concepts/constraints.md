@@ -84,6 +84,30 @@ INSERT INTO users VALUES ('alice@example.com', 'Alice')  -- OK
 INSERT INTO users VALUES ('alice@example.com', 'Bob')    -- FAILS! Email taken.
 ```
 
+## How PyDB Spots a Duplicate Fast
+
+Picture a teacher checking that no two children in her class share a name.
+The slow way: each time a new child arrives, walk past *every* desk and
+read *every* name tag. With 30 children that's fine; with 20 000 it takes
+all day.
+
+The fast way is a **register** -- a list of names, each pointing at a desk.
+A new child says "I'm Sam", the teacher looks up "Sam" in the register
+once, and she knows straight away whether that name is taken. When a child
+changes their name or leaves, she updates the register.
+
+Each PyDB table keeps a register like that (`pydb.unique.UniqueRegister`)
+for every PRIMARY KEY and UNIQUE column: a dictionary from value to row.
+Checking a new value is one look-up, however big the table is. The table
+keeps the register up to date on every insert, update and delete, and
+rebuilds it when a table is loaded from disk, replayed after a crash, or
+rolled back by a transaction.
+
+Two values count as the same exactly when Python's `==` says so. That's
+why, in a FLOAT column, `1` and `1.0` clash (`1` is widened to `1.0`
+anyway). A missing value is never registered, and neither is NaN ("not a
+number") -- `NaN == NaN` is False, so NaNs never clash.
+
 ## What We Test
 
 - PRIMARY KEY rejects duplicate values.
@@ -92,6 +116,10 @@ INSERT INTO users VALUES ('alice@example.com', 'Bob')    -- FAILS! Email taken.
 - Every column requires a value (PyDB has no NULL yet).
 - Constraints are parsed correctly in CREATE TABLE.
 - Clear error messages explain which constraint was violated.
+- The register agrees with the old "compare with every row" check for
+  every pair of tricky values (`1`, `1.0`, `True`, NaN, dates...).
+- The register stays right after updates, deletes, rollback, load and
+  crash recovery -- and an insert reads only a handful of rows, not all.
 
 ## Next Up
 

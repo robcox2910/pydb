@@ -20,11 +20,13 @@ executor uses them automatically:
 - **B-Tree indexes** -- CREATE/DROP INDEX; equality lookups use the index
   automatically; index definitions are saved and rebuilt on load
 - **Query planner** -- EXPLAIN shows scan vs. index lookup decisions
-- **Constraints** -- PRIMARY KEY, NOT NULL, UNIQUE
+- **Constraints** -- PRIMARY KEY, NOT NULL, UNIQUE (duplicates are found
+  with one look-up in a register of values, not by reading every row)
 - **Dates and times** -- `DATE` and `TIMESTAMP` columns (stored in UTC),
   with `DATE '…'` / `TIMESTAMP '…'` literals in SQL
 - **Transactions** -- commit/rollback via table snapshots, also as
-  `with Transaction(db):`
+  `with Transaction(db):`; a table is copied only when the transaction first
+  changes it, so untouched (big) tables cost nothing
 - **Durable databases** -- `Database(path, journal=True)` writes every commit
   to a checksummed journal before it counts, recovers after a crash, and
   checkpoints to keep the journal short

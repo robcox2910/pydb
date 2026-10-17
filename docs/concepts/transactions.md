@@ -32,7 +32,7 @@ guarantee:
 ```python
 from pydb.transaction import Transaction
 
-# Start a transaction -- take a "snapshot" of the current state.
+# Start a transaction -- ready to photocopy any table before it changes.
 txn = Transaction(database)
 
 # Make changes through the transaction.
@@ -44,20 +44,42 @@ table.delete(record_id=3)
 txn.commit()   # Changes are now permanent!
 
 # Something went wrong? Roll back.
-txn.rollback()  # Everything reverts to the snapshot.
+txn.rollback()  # Everything reverts to the snapshots.
 ```
 
 ## Under the Hood
 
 Our transaction uses a simple but effective strategy:
 
-1. **Begin** -- take a snapshot of each table's records and next ID.
-2. **Work** -- inserts, updates, and deletes happen on the live tables.
+1. **Begin** -- remember which tables exist, and ask each one to shout
+   "I'm about to change!" before its first change.
+2. **Work** -- inserts, updates, and deletes happen on the live tables. The
+   first time a table is about to change, we take a snapshot of its records,
+   next ID and index list -- *then* let the change happen.
 3. **Commit** -- discard the snapshots (changes are already applied).
-4. **Rollback** -- restore every table from its snapshot.
+4. **Rollback** -- restore every snapshotted table, put back any table that
+   was dropped, and remove any table that was created.
 
 This is called **undo logging** -- we keep enough information to undo
 everything if we need to.
+
+### Only photocopy the pages you're about to scribble on
+
+Imagine you borrow your friend's giant notebook to add one doodle. You
+*could* photocopy all 500 pages first, just in case you mess up -- but
+that takes ages, and you only planned to draw on page 12! The clever way
+is to photocopy **page 12 only**, right before you draw on it. If the
+doodle goes wrong, you stick the copy back; the other 499 pages were never
+touched, so they never needed a copy.
+
+PyDB transactions work the same way (this is called **copy-on-first-write**).
+A table is copied only the first time the transaction is about to change
+it -- an insert, update or delete, creating or dropping an index, or
+dropping the table itself. It doesn't matter *how* the change arrives: through
+`txn.get_table(...)`, through a `Table` you fetched before the transaction
+began, or through a SQL statement. A huge history table that the
+transaction never touches is never copied, so a small transaction stays
+quick however big the rest of the database grows.
 
 Real databases use fancier techniques (write-ahead logs, MVCC), but
 the idea is the same: always be able to go back to a safe state.
@@ -74,6 +96,12 @@ transaction is open (see [Locks and Threads](locks-and-threads.md)).
 - A rolled-back transaction's changes are undone.
 - Rolling back restores the original row count.
 - Rolling back restores the original next ID.
+- A big table the transaction never touches is never copied (a spy counts
+  the snapshots).
+- Rollback undoes changes from every path: a `Table` fetched earlier, SQL
+  `INSERT`/`UPDATE`/`DELETE`, index changes, dropping a table, and
+  creating then dropping one -- also on a journalled database after a
+  reopen or a crash.
 - You can't commit or rollback twice.
 - Operations after commit or rollback raise an error.
 
