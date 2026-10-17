@@ -239,26 +239,35 @@ class Transaction:
             self._release()
 
     def _restore(self) -> None:
-        """Put every table back as it was at the start and end the transaction."""
-        self._finished = True
-        self._untrack()
+        """Put every table back as it was at the start and end the transaction.
 
-        # Undo every change in place, newest first, so a reader holding one
-        # of these Table objects never sees the rolled-back work. Then put
-        # every original table back in the catalog (dropped or replaced
-        # ones included).
-        self._undo.rollback()
+        Whatever happens -- even if an undo note fails -- the tables stop
+        writing notes, the catalog is put back and the held changes are
+        thrown away, so the database never stays stuck in a transaction.
+        The first error is passed on.
+        """
+        self._finished = True
+        try:
+            self._untrack()
+            # Undo every change in place, newest first, so a reader holding
+            # one of these Table objects never sees the rolled-back work.
+            self._undo.rollback()
+        finally:
+            try:
+                self._restore_catalog()
+            finally:
+                self._database.discard_batch()
+                self._originals.clear()
+
+    def _restore_catalog(self) -> None:
+        """Put every original table back and drop the tables created since."""
         for table in self._originals.values():
             self._database.replace_table(table)
-
-        # Remove tables created during the transaction. The batch is still
-        # open, so these drops are held -- and then thrown away below.
+        # The batch is still open, so these drops are held -- and then
+        # thrown away by ``discard_batch``.
         current_names = set(self._database.table_names())
         for name in current_names - self._originals.keys():
             self._database.drop_table(name)
-
-        self._database.discard_batch()
-        self._originals.clear()
 
     @property
     def is_active(self) -> bool:

@@ -122,6 +122,11 @@ idx.find("Charmander")    # [2]
 idx.find_range("A", "M")  # [2]  (Charmander)
 ```
 
+When several rows share a value -- three cards all called "Pikachu" --
+the index keeps their record IDs **in ascending order**, like a register
+listing pupils by seat number: `idx.find("Pikachu")` gives `[1, 4, 9]`,
+however the rows were added, changed, removed or rolled back.
+
 ## What We Test
 
 - Inserting keys keeps the tree sorted and balanced.
@@ -130,6 +135,7 @@ idx.find_range("A", "M")  # [2]  (Charmander)
 - The tree splits nodes correctly when they overflow.
 - Range searches return all matching keys.
 - Deleting a key removes it from the index.
+- Record IDs that share a key are listed in ascending order.
 - The tree stays balanced after many inserts and deletes.
 
 ## Next Up

@@ -6,7 +6,9 @@ big the table is, so no table is ever copied. Rollback follows the notes
 newest first and must undo every kind of change, whichever path made it.
 """
 
-from collections.abc import Callable
+import threading
+from _collections_abc import dict_items, dict_keys, dict_values
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,7 @@ POWER_99 = 99
 CHANGE_KINDS = 5
 MAX_RECORDS_BUILT = 3
 TRACK_FAILS_AT = 2
+DUP_ROWS = 5
 
 Rows = list[tuple[int, dict[str, object]]]
 
@@ -64,13 +67,25 @@ def _rows(table: Table) -> Rows:
     return [(r.record_id, dict(r.data)) for r in table.select()]
 
 
-def _state(db: Database) -> dict[str, tuple[Rows, int, list[tuple[str, str]]]]:
-    """Return everything rollback must put back, for every table."""
+IndexDump = list[tuple[str, list[tuple[Value, list[int]]]]]
+State = dict[str, tuple[Rows, int, IndexDump]]
+
+
+def _indexes(table: Table) -> IndexDump:
+    """Return each index's name and its contents: every key with its ID list, in order."""
+    return [
+        (name, [(key, index.find(key)) for key in index._tree.all_keys()])
+        for name, index in table.indexes.items()
+    ]
+
+
+def _state(db: Database) -> State:
+    """Return everything rollback must put back, for every table (index contents too)."""
     return {
         name: (
             _rows(db.get_table(name)),
             db.get_table(name).next_id,
-            db.get_table(name).index_definitions,
+            _indexes(db.get_table(name)),
         )
         for name in db.table_names()
     }
@@ -84,6 +99,37 @@ def _name_taken(table: Table, name: str) -> bool:
         return True
     table.delete(record.record_id)
     return False
+
+
+class _CountingDict(dict[int, Record]):
+    """A dict that counts every walk over (or copy of) its contents."""
+
+    walks = 0
+
+    def __iter__(self) -> Iterator[int]:
+        """Count, then iterate the keys."""
+        self.walks += 1
+        return super().__iter__()
+
+    def keys(self) -> dict_keys[int, Record]:
+        """Count, then return the keys."""
+        self.walks += 1
+        return super().keys()
+
+    def values(self) -> dict_values[int, Record]:
+        """Count, then return the values."""
+        self.walks += 1
+        return super().values()
+
+    def items(self) -> dict_items[int, Record]:
+        """Count, then return the items."""
+        self.walks += 1
+        return super().items()
+
+    def copy(self) -> dict[int, Record]:
+        """Count, then copy."""
+        self.walks += 1
+        return dict(super().items())
 
 
 @pytest.fixture
@@ -120,11 +166,18 @@ class TestConstantBookkeeping:
             real_init(record, record_id, data)
 
         monkeypatch.setattr(Record, "__init__", counting)
+        store = big._rows
+        watched = _CountingDict(store.records)
+        store.records = watched
+        unique = store.unique
         txn = Transaction(db)
         big.insert({"name": "Pikachu", "power": POWER_55})
         txn.rollback()
         monkeypatch.undo()
         assert built < MAX_RECORDS_BUILT
+        assert watched.walks == 0  # nobody iterated or copied the rows
+        assert store.records is watched  # ...or swapped in a rebuilt dict
+        assert store.unique is unique
         assert len(note_spy) == 1
         assert _rows(big) == before
         assert big.next_id == BIG_ROWS + 1
@@ -192,6 +245,47 @@ class TestConstantBookkeeping:
             txn.get_table("cards").insert({"name": "Pikachu", "power": POWER_55})
         assert db.get_table("cards").row_count == SMALL_ROWS + 1
 
+    def test_failing_note_does_not_leave_the_database_stuck(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If an undo note raises, rollback still ends the batch and hands the lock back."""
+        db = _make_db(tmp_path)
+        real = UndoLog.note
+
+        def broken_note(log: UndoLog, store: RowStore, undo: Callable[[], None]) -> None:
+            del undo  # replaced by one that fails
+
+            def explode() -> None:
+                msg = "undo failed"
+                raise RuntimeError(msg)
+
+            real(log, store, explode)
+
+        txn = Transaction(db)
+        monkeypatch.setattr(UndoLog, "note", broken_note)
+        db.get_table("cards").insert({"name": "Pikachu", "power": POWER_55})
+        _fill(db.create_table("temp", _schema()), 1)
+        monkeypatch.undo()
+        with pytest.raises(RuntimeError, match="undo failed"):
+            txn.rollback()
+        assert not txn.is_active
+        assert not db.in_transaction
+        assert "temp" not in db.table_names()  # the catalog was still put back
+        got_lock: list[bool] = []
+
+        def take_turn() -> None:
+            acquired = db.lock.acquire(timeout=1)
+            got_lock.append(acquired)
+            if acquired:
+                db.lock.release()
+
+        thread = threading.Thread(target=take_turn)
+        thread.start()
+        thread.join()
+        assert got_lock == [True]  # another thread can have its turn
+        with Transaction(db) as again:  # a fresh transaction works, with an empty log
+            again.get_table("decks").insert({"name": "fresh", "power": 1})
+
 
 class TestUndoIsExact:
     """Rollback puts back ids, order, next_id, indexes and uniqueness exactly."""
@@ -220,13 +314,49 @@ class TestUndoIsExact:
         cards.drop_index("by_power")
         cards.delete(2)
         txn.rollback()
-        assert _state(db) == before  # index order kept too
+        assert _state(db) == before  # index order and contents (ID lists) kept too
         index = cards.get_index_for_column("power")
         assert index is not None
         assert [r.record_id for r in cards.select_by_index(index, 1)] == [2]
         assert cards.select_by_index(index, POWER_99) == []
         assert _name_taken(cards, "card0")
         assert not _name_taken(cards, "renamed")
+
+    def _tagged(self, tmp_path: Path, *, journal: bool = False) -> Database:
+        """Return a database whose ``t`` table has DUP_ROWS rows tagged 'x', indexed."""
+        db = Database(tmp_path, journal=journal)
+        table = db.create_table("t", Schema(columns=[Column(name="tag", data_type=DataType.TEXT)]))
+        table.create_index("by_tag", "tag")
+        for _ in range(DUP_ROWS):
+            table.insert({"tag": "x"})
+        return db
+
+    def test_failed_multi_row_update_keeps_duplicate_id_order(self, tmp_path: Path) -> None:
+        """A multi-row UPDATE refused at commit leaves ``find('x')`` in ID order."""
+        db = self._tagged(tmp_path, journal=True)
+        before = _state(db)
+
+        def refuse(changes: list[Change]) -> None:
+            msg = f"refused {len(changes)}"
+            raise RuntimeError(msg)
+
+        db.add_commit_listener(refuse)
+        with pytest.raises(Exception, match="refused"):
+            execute(parse_sql("UPDATE t SET tag = 'y'"), db)
+        assert _state(db) == before
+        index = db.get_table("t").get_index_for_column("tag")
+        assert index is not None
+        assert index.find("x") == list(range(1, DUP_ROWS + 1))
+        db.close()
+
+    def test_rolled_back_update_keeps_duplicate_id_order(self, tmp_path: Path) -> None:
+        """Updating row 1 away from 'x' and rolling back keeps ``find('x')`` as [1, 2, ...]."""
+        db = self._tagged(tmp_path)
+        before = _state(db)
+        txn = Transaction(db)
+        db.get_table("t").update(1, {"tag": "y"})
+        txn.rollback()
+        assert _state(db) == before
 
     def test_refused_change_inside_a_transaction(self, tmp_path: Path) -> None:
         """A change refused through a dropped journalled table is undone, then rolled back."""

@@ -10,6 +10,7 @@ because multiple records can share the same value (e.g., many people might
 have the name "Alice").
 """
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -111,8 +112,10 @@ class BTree:
     def insert(self, key: BTreeKey, record_id: int) -> None:
         """Insert a key-record pair into the tree.
 
-        If the key already exists, the record ID is appended to that
-        key's list (supporting duplicate values in the indexed column).
+        If the key already exists, the record ID joins that key's list
+        (supporting duplicate values in the indexed column). Each list is
+        kept in ascending ID order, so ``search`` gives the same answer
+        however the rows were added, removed or rolled back.
 
         Args:
             key: The column value to index.
@@ -136,10 +139,12 @@ class BTree:
         """
         i = self._find_position(node, key)
 
-        # If the key already exists, just append the record ID.
+        # If the key already exists, slot the record ID in, keeping ID order.
         if i < len(node.keys) and node.keys[i] == key:
-            if record_id not in node.values[i]:
-                node.values[i].append(record_id)
+            ids = node.values[i]
+            at = bisect_left(ids, record_id)
+            if at == len(ids) or ids[at] != record_id:
+                ids.insert(at, record_id)
             return
 
         if node.leaf:

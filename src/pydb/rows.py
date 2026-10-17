@@ -44,12 +44,18 @@ class UndoLog:
         self._stores.setdefault(id(store), store)
 
     def rollback(self) -> None:
-        """Undo every noted change, newest first, then empty the log."""
-        for undo in reversed(self._notes):
-            undo()
-        for store in self._stores.values():
-            store.tidy()
-        self.clear()
+        """Undo every noted change, newest first, then empty the log.
+
+        If a note fails, the error is passed on -- but the stores are still
+        tidied and the log is still emptied, so nothing is undone twice.
+        """
+        try:
+            for undo in reversed(self._notes):
+                undo()
+        finally:
+            for store in self._stores.values():
+                store.tidy()
+            self.clear()
 
     def clear(self) -> None:
         """Forget every note (the changes are kept)."""
