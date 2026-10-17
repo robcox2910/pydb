@@ -5,10 +5,12 @@ If one fails, both are rolled back. These tests verify that
 guarantee.
 """
 
+import threading
 from pathlib import Path
 
 import pytest
 
+from pydb import outbox as outbox_module
 from pydb.changes import Change
 from pydb.database import Database
 from pydb.executor import execute
@@ -18,6 +20,7 @@ from pydb.sql_parser import parse_sql
 ONE_MESSAGE = 1
 ZERO_MESSAGES = 0
 BALANCE_90 = 90
+LOCK_WAIT_SECONDS = 2
 
 
 def _make_db(tmp_path: Path) -> Database:
@@ -293,3 +296,49 @@ class TestOutboxCommitFailure:
                 message={"queue": "q", "body": "b"},
             )
         assert isinstance(excinfo.value.__cause__, JournalDownError)
+
+
+def _interrupt(*_args: object) -> None:
+    """Stand in for running the SQL: press Ctrl-C."""
+    raise KeyboardInterrupt
+
+
+def _lock_is_free(db: Database) -> bool:
+    """Return whether another thread can take the database's lock right now."""
+    got: list[bool] = []
+
+    def try_it() -> None:
+        """Try to take the lock briefly, then hand it back."""
+        got.append(db.lock.acquire(timeout=LOCK_WAIT_SECONDS))
+        if got[-1]:
+            db.lock.release()
+
+    other = threading.Thread(target=try_it)
+    other.start()
+    other.join()
+    return got == [True]
+
+
+class TestOutboxInterrupt:
+    """Ctrl-C in the middle of an outbox operation still rolls back and frees the lock."""
+
+    @pytest.mark.parametrize("multi", [False, True])
+    def test_interrupt_rolls_back_and_releases_the_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, multi: bool
+    ) -> None:
+        """Pass KeyboardInterrupt on, leave nothing changed and the lock free."""
+        db = _make_db(tmp_path)
+        outbox = Outbox(db)
+        monkeypatch.setattr(outbox_module, "execute", _interrupt)
+        message = {"queue": "q", "body": "b"}
+        sql = "UPDATE accounts SET balance = 90 WHERE name = 'Alice'"
+        run = (
+            (lambda: outbox.execute_multi(statements=[sql], message=message))
+            if multi
+            else (lambda: outbox.execute(sql=sql, message=message))
+        )
+        with pytest.raises(KeyboardInterrupt):
+            run()
+        assert _lock_is_free(db)
+        assert not db.in_transaction
+        assert outbox.pending_messages() == []

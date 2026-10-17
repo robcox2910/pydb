@@ -96,32 +96,7 @@ class Outbox:
             OutboxError: If the operation fails.
 
         """
-        if "queue" not in message or "body" not in message:
-            msg = "Message must have 'queue' and 'body' keys"
-            raise OutboxError(msg)
-
-        txn = Transaction(self._database)
-        try:
-            # Execute the user's SQL.
-            parsed = parse_sql(sql)
-            execute(parsed, self._database)
-
-            # Save the message to the outbox table.
-            outbox_table = self._database.get_table(OUTBOX_TABLE)
-            outbox_table.insert(
-                {
-                    "queue": message["queue"],
-                    "body": message["body"],
-                    "status": STATUS_PENDING,
-                    "created_at": datetime.now(tz=UTC).isoformat(),
-                }
-            )
-
-            txn.commit()
-        except Exception as exc:
-            txn.rollback()
-            msg = f"Outbox operation failed: {exc}"
-            raise OutboxError(msg) from exc
+        self.execute_multi([sql], message)
 
     def execute_multi(self, statements: list[str], message: dict[str, str]) -> None:
         """Execute multiple SQL statements and save a message atomically.
@@ -142,23 +117,20 @@ class Outbox:
 
         txn = Transaction(self._database)
         try:
-            for sql in statements:
-                parsed = parse_sql(sql)
-                execute(parsed, self._database)
-
-            outbox_table = self._database.get_table(OUTBOX_TABLE)
-            outbox_table.insert(
-                {
-                    "queue": message["queue"],
-                    "body": message["body"],
-                    "status": STATUS_PENDING,
-                    "created_at": datetime.now(tz=UTC).isoformat(),
-                }
-            )
-
-            txn.commit()
-        except Exception as exc:
-            txn.rollback()
+            # The with block commits at the end and rolls back on *any*
+            # error -- even Ctrl-C -- so the database's lock is always freed.
+            with txn:
+                for sql in statements:
+                    execute(parse_sql(sql), self._database)
+                self._database.get_table(OUTBOX_TABLE).insert(
+                    {
+                        "queue": message["queue"],
+                        "body": message["body"],
+                        "status": STATUS_PENDING,
+                        "created_at": datetime.now(tz=UTC).isoformat(),
+                    }
+                )
+        except Exception as exc:  # (already rolled back by the with block)
             msg = f"Outbox operation failed: {exc}"
             raise OutboxError(msg) from exc
 
