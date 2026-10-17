@@ -40,7 +40,7 @@ class Table:
 
     """
 
-    __slots__ = ("_indexes", "_name", "_next_id", "_records", "_schema", "_sink")
+    __slots__ = ("_after_sink", "_indexes", "_name", "_next_id", "_records", "_schema", "_sink")
 
     def __init__(self, name: str, schema: Schema) -> None:
         """Create a new empty table with the given name and schema."""
@@ -50,6 +50,7 @@ class Table:
         self._next_id = 1
         self._indexes: dict[str, Index] = {}
         self._sink: ChangeSink | None = None
+        self._after_sink: Callable[[], None] | None = None
 
     @property
     def name(self) -> str:
@@ -94,12 +95,19 @@ class Table:
             table._add_index(index_name, column)
         return table
 
-    def set_sink(self, sink: ChangeSink | None) -> None:
+    def set_sink(self, sink: ChangeSink | None, after: Callable[[], None] | None = None) -> None:
         """Choose the function that receives a ``Change`` after each change.
 
         The owning ``Database`` calls this; ``None`` stops recording.
+
+        Args:
+            sink: Receives each change; if it raises, the change is undone.
+            after: Called once the sink accepted a change, outside the undo
+                step -- an error from it never undoes the change.
+
         """
         self._sink = sink
+        self._after_sink = after
 
     @property
     def next_id(self) -> int:
@@ -337,6 +345,8 @@ class Table:
                 # Hand back the ID number the failed insert used up.
                 self._next_id = change.record_id
             raise
+        if self._after_sink is not None:
+            self._after_sink()
 
     def replay_change(self, change: Change) -> None:
         """Redo a journalled row or index change exactly (used by recovery).

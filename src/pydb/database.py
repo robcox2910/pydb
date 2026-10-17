@@ -33,7 +33,7 @@ from pydb.schema import Schema
 from pydb.storage import StorageEngine
 from pydb.table import Table
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class DatabaseError(PyDBError):
@@ -134,8 +134,18 @@ class Database:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Close the database at the end of a ``with`` block."""
-        self.close()
+        """Close the database at the end of a ``with`` block.
+
+        If the block is already failing, a failing closing checkpoint is
+        logged instead, so the block's own error is the one you see.
+        """
+        if exc is None:
+            self.close()
+            return
+        try:
+            self.close()
+        except Exception:
+            logger.exception("closing checkpoint failed while handling another error")
 
     def close(self) -> None:
         """Take a checkpoint and release the journal (does nothing without one).
@@ -173,18 +183,26 @@ class Database:
         self._checkpointer.checkpoint(self._tables, crash_after=self._crash_after)
         self._dropped.clear()
 
-    def _maybe_checkpoint(self) -> None:
-        """Checkpoint if the journal grew past ``checkpoint_bytes`` (errors are logged).
+    def after_commit(self) -> None:
+        """Checkpoint if the journal grew past ``checkpoint_bytes`` (called after a commit).
 
-        The commit before this is already durable, so a failure here must
-        not undo it: it is logged and the next commit tries again.
+        Tables, ``create_table``/``drop_table`` and ``Transaction.commit``
+        call this *after* a commit is complete, outside the step that would
+        undo it -- the commit is already durable, so nothing here may undo
+        it. An error is logged and the next commit tries again; an
+        interrupt (``KeyboardInterrupt``) propagates, but the commit stands.
+        Inside an open transaction this does nothing.
         """
-        if self._journal is None or self._journal.size_bytes <= self._checkpoint_bytes:
+        if (
+            self._journal is None
+            or self._batch is not None
+            or self._journal.size_bytes <= self._checkpoint_bytes
+        ):
             return
         try:
             self.checkpoint()
-        except (OSError, PyDBError) as exc:
-            _log.warning("automatic checkpoint failed (%s); the journal keeps everything", exc)
+        except Exception:  # the commit is durable: never undo or fail it
+            logger.exception("automatic checkpoint failed; the journal keeps everything")
 
     @property
     def path(self) -> Path:
@@ -242,7 +260,7 @@ class Database:
 
     def _adopt(self, table: Table) -> None:
         """Put *table* in the catalog and route its changes to this database."""
-        table.set_sink(self._on_change)
+        table.set_sink(self._on_change, after=self.after_commit)
         self._tables[table.name] = table
 
     def _on_change(self, change: Change) -> None:
@@ -251,7 +269,6 @@ class Database:
             self._batch.append(change)
         else:
             self._commit([change])
-            self._maybe_checkpoint()
 
     def _commit(self, changes: list[Change]) -> None:
         """Deliver one commit's changes to every listener, then to the journal.
@@ -288,7 +305,6 @@ class Database:
         """
         self._commit(self._batch or [])
         self._batch = None
-        self._maybe_checkpoint()
 
     def discard_batch(self) -> None:
         """Throw away the held changes and stop holding (``Transaction.rollback``)."""
@@ -322,6 +338,7 @@ class Database:
             if was_dropped:
                 self._dropped.add(name)
             raise
+        self.after_commit()
         return table
 
     def get_table(self, name: str) -> Table:
@@ -373,6 +390,7 @@ class Database:
             if not was_dropped:
                 self._dropped.discard(name)
             raise
+        self.after_commit()
 
     def table_names(self) -> list[str]:
         """Return the names of all tables in the database."""

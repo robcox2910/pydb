@@ -139,6 +139,7 @@ class Transaction:
             raise
         self._finished = True
         self._snapshots.clear()
+        self._database.after_commit()  # outside the try: this commit is final
 
     def rollback(self) -> None:
         """Roll back the transaction -- undo all changes.

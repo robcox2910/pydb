@@ -206,10 +206,127 @@ class TestAutoCheckpoint:
         with caplog.at_level(logging.WARNING, logger="pydb.database"):
             db.create_table("cards", _schema()).insert({"name": "A", "power": 1})
         assert "checkpoint failed" in caplog.text
+        assert "No space" in caplog.text
         assert db.get_table("cards").row_count == 1
         monkeypatch.undo()
         del db
         assert len(_state(_open(tmp_path))["cards"][0]) == 1
+
+
+def _interrupting(*_args: object, **_kwargs: object) -> None:
+    """Stand in for a checkpoint that is interrupted (Ctrl-C)."""
+    raise KeyboardInterrupt
+
+
+class TestInterruptedAutoCheckpoint:
+    """An automatic checkpoint runs after the commit, never inside its undo."""
+
+    def _open_tiny(self, folder: Path, monkeypatch: pytest.MonkeyPatch) -> Database:
+        """Open a database whose every commit checkpoints, with two committed rows."""
+        db = _open(folder, checkpoint_bytes=_TINY)
+        _fill(db, _TWO_ROWS)
+        monkeypatch.setattr(Checkpointer, "checkpoint", _interrupting)
+        return db
+
+    def _reopen(self, folder: Path, monkeypatch: pytest.MonkeyPatch) -> Database:
+        """Undo the patch and reopen the folder."""
+        monkeypatch.undo()
+        return _open(folder)
+
+    def test_interrupted_insert_keeps_the_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keep the inserted row and its ID; the next insert gets a new ID."""
+        db = self._open_tiny(tmp_path, monkeypatch)
+        cards = db.get_table("cards")
+        with pytest.raises(KeyboardInterrupt):
+            cards.insert({"name": "C", "power": 3})
+        assert cards.row_count == _THREE_ROWS
+        assert cards.next_id == _THREE_ROWS + 1
+        del db
+        again = self._reopen(tmp_path, monkeypatch)
+        assert again.get_table("cards").row_count == _THREE_ROWS
+        assert again.get_table("cards").insert({"name": "D", "power": 4}).record_id == (
+            _THREE_ROWS + 1
+        )
+
+    def test_interrupted_delete_stays_deleted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keep the row deleted in memory, so the folder still reopens."""
+        db = self._open_tiny(tmp_path, monkeypatch)
+        cards = db.get_table("cards")
+        with pytest.raises(KeyboardInterrupt):
+            cards.delete(_FIRST_ID)
+        assert [r.record_id for r in cards.select()] == [_SECOND_ID]
+        del db
+        again = self._reopen(tmp_path, monkeypatch)
+        assert [r.record_id for r in again.get_table("cards").select()] == [_SECOND_ID]
+
+    def test_interrupted_transaction_commit_stays_committed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keep a committed transaction when the checkpoint after it is interrupted."""
+        db = self._open_tiny(tmp_path, monkeypatch)
+        txn = Transaction(db)
+        txn.get_table("cards").insert({"name": "C", "power": 3})
+        with pytest.raises(KeyboardInterrupt):
+            txn.commit()
+        assert not txn.is_active
+        assert db.get_table("cards").row_count == _THREE_ROWS
+        del db
+        again = self._reopen(tmp_path, monkeypatch)
+        assert again.get_table("cards").row_count == _THREE_ROWS
+
+    def test_interrupted_create_table_keeps_the_table(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keep a created table when the checkpoint after it is interrupted."""
+        db = self._open_tiny(tmp_path, monkeypatch)
+        with pytest.raises(KeyboardInterrupt):
+            db.create_table("more", _schema())
+        assert "more" in db.table_names()
+        del db
+        assert "more" in self._reopen(tmp_path, monkeypatch).table_names()
+
+    def test_any_exception_is_logged_and_the_commit_stands(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Log a ValueError from the checkpoint instead of raising it."""
+        db = _open(tmp_path, checkpoint_bytes=_TINY)
+        _fill(db, _TWO_ROWS)
+
+        def broken(*_args: object, **_kwargs: object) -> None:
+            """Fail with an unexpected error."""
+            msg = "unexpected"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(Checkpointer, "checkpoint", broken)
+        with caplog.at_level(logging.WARNING, logger="pydb.database"):
+            db.get_table("cards").delete(_FIRST_ID)
+        assert "unexpected" in caplog.text
+        del db
+        rows = _state(self._reopen(tmp_path, monkeypatch))["cards"][0]
+        assert [rid for rid, _ in rows] == [_SECOND_ID]
+
+    def test_close_in_a_failing_with_block_keeps_the_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Log a failing closing checkpoint rather than hide the block's error."""
+        db = _open(tmp_path)
+        db.create_table("cards", _schema())
+        monkeypatch.setattr(Checkpointer, "checkpoint", _broken_disk)
+        failure = ZeroDivisionError("the block failed")
+        with caplog.at_level(logging.WARNING, logger="pydb.database"):
+            db.__exit__(ZeroDivisionError, failure, None)
+        assert "No space" in caplog.text
+        with pytest.raises(OSError, match="No space"):
+            db.__exit__(None, None, None)
+
+
+def _broken_disk(*_args: object, **_kwargs: object) -> None:
+    """Fail like a full disk."""
+    raise OSError(28, "No space left on device")
 
 
 class TestRecoveryFromCheckpoint:

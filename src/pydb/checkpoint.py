@@ -63,7 +63,13 @@ class _Card:
 
 
 def _parse_card(raw: object) -> _Card:
-    """Turn the parsed JSON of ``checkpoint.json`` into a card (ValueError if wrong)."""
+    """Turn the parsed JSON of ``checkpoint.json`` into a card.
+
+    Raises:
+        KeyError: If ``"lsn"``, ``"tables"`` or a table's ``"name"``/``"file"`` is missing.
+        TypeError: If a value has the wrong type.
+
+    """
     if not isinstance(raw, dict):
         raise TypeError
     obj: dict[str, object] = raw  # pyright: ignore[reportUnknownVariableType]
