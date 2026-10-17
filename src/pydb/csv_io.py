@@ -6,12 +6,14 @@ kids can import their own data or share it with other tools.
 """
 
 import csv
+from datetime import date
 from pathlib import Path
+from typing import cast
 
-from pydb.errors import PyDBError
+from pydb.errors import PyDBError, SchemaError
 from pydb.record import Value
 from pydb.table import Table
-from pydb.types import DataType
+from pydb.types import DataType, from_iso, to_iso
 
 
 class CSVError(PyDBError):
@@ -37,9 +39,14 @@ def export_table(table: Table, file_path: str | Path) -> int:
         writer = csv.writer(f)
         writer.writerow(columns)
         for record in records:
-            writer.writerow([record[col] for col in columns])
+            writer.writerow([_cell(record[col]) for col in columns])
 
     return len(records)
+
+
+def _cell(value: Value) -> Value:
+    """Return the CSV cell for a value (dates become ISO text)."""
+    return to_iso(value) if isinstance(value, date) else value
 
 
 def import_csv(table: Table, file_path: str | Path) -> int:
@@ -113,7 +120,9 @@ def _coerce_value(raw: str, data_type: DataType, col_name: str, row_num: int) ->
                 return float(raw)
             case DataType.BOOLEAN:
                 return raw.lower() in ("true", "1", "yes")
-    except (ValueError, TypeError) as exc:
+            case DataType.DATE | DataType.TIMESTAMP:
+                return cast(Value, from_iso(raw, data_type))
+    except (ValueError, TypeError, SchemaError) as exc:
         msg = f"Row {row_num}: cannot convert {raw!r} to {data_type.value} for column {col_name!r}"
         raise CSVError(msg) from exc
     msg = f"Unsupported data type: {data_type}"  # pragma: no cover

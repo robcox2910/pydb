@@ -6,7 +6,7 @@ of thing. These tests verify that our type definitions are correct.
 
 from pydb.types import PYTHON_TYPES, DataType
 
-EXPECTED_TYPE_COUNT = 4
+EXPECTED_TYPE_COUNT = 6
 
 
 class TestDataType:

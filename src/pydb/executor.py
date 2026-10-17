@@ -390,7 +390,8 @@ def _compute_aggregate(agg: AggregateColumn, records: Sequence[_RowLike]) -> Val
             values: list[Any] = [r[agg.column] for r in records]
             return sum(values)
         case AggFunc.AVG:
-            total = sum(float(r[agg.column]) for r in records)
+            avg_values: list[Any] = [r[agg.column] for r in records]
+            total = sum(float(v) for v in avg_values)
             return total / len(records) if records else 0.0
         case AggFunc.MIN:
             values: list[Any] = [r[agg.column] for r in records]

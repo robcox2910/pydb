@@ -5,10 +5,11 @@ number (the ID) and a set of facts printed on it (the data fields).
 """
 
 from collections.abc import Mapping
+from datetime import date, datetime
 from typing import Any
 
 # Type alias for values stored in a record.
-Value = str | int | float | bool
+Value = str | int | float | bool | date | datetime
 
 
 class Record:

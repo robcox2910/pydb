@@ -7,12 +7,13 @@ forth so nothing gets lost.
 """
 
 import json
+from datetime import date
 from typing import Any, cast
 
 from pydb.errors import PyDBError
 from pydb.record import Record, Value
 from pydb.schema import Column, Schema
-from pydb.types import DataType
+from pydb.types import DataType, from_iso, to_iso
 
 
 class SerializationError(PyDBError):
@@ -22,10 +23,11 @@ class SerializationError(PyDBError):
 def _value_to_json(value: Value) -> str | int | float | bool:
     """Convert a record value to a JSON-safe Python type.
 
-    All Value types (str, int, float, bool) are already JSON-safe, so this
-    is effectively an identity function -- but it gives us a hook if we add
-    more types later.
+    Text, numbers and booleans are already JSON-safe; dates and timestamps
+    become ISO text.
     """
+    if isinstance(value, date):
+        return to_iso(value)
     return value
 
 
@@ -54,6 +56,8 @@ def _value_from_json(raw: str | int | float | bool, data_type: DataType) -> Valu
             if not isinstance(raw, bool):
                 return bool(raw)
             return raw
+        case DataType.DATE | DataType.TIMESTAMP:
+            return cast(Value, from_iso(str(raw), data_type))
         case _:  # pragma: no cover
             msg = f"Unsupported data type: {data_type}"
             raise SerializationError(msg)

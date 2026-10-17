@@ -5,8 +5,10 @@ just like the output you see in real database tools.
 """
 
 from collections.abc import Sequence
+from datetime import date
 
 from pydb.record import Value
+from pydb.types import to_iso
 
 
 def format_results(rows: Sequence[dict[str, Value]], columns: list[str] | None = None) -> str:
@@ -52,6 +54,8 @@ def _format_value(value: Value | str) -> str:
     """Convert a value to its display string."""
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, date):
+        return to_iso(value)
     return str(value)
 
 
