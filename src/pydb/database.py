@@ -48,6 +48,15 @@ class DatabaseError(PyDBError):
     """Raise when a database-level operation fails."""
 
 
+def _refuse_detached(change: Change) -> None:
+    """Refuse a change made through a table a journalled database no longer manages."""
+    msg = (
+        f"Table {change.table!r} is no longer part of the database "
+        "(it was dropped, rolled back or replaced); get it again with get_table()"
+    )
+    raise DatabaseError(msg)
+
+
 @lock_public_methods
 class Database:
     """Manage a collection of named tables with disk persistence.
@@ -297,10 +306,27 @@ class Database:
         self._commits.clear()
 
     def _adopt(self, table: Table) -> None:
-        """Put *table* in the catalog, sharing this database's lock and recording."""
+        """Put *table* in the catalog, sharing this database's lock and recording.
+
+        A different table already under that name is detached.
+        """
+        replaced = self._tables.get(table.name)
+        if replaced is not None and replaced is not table:
+            self._detach(replaced)
         table.share_lock(self._lock)
         table.set_sink(self._on_change, after=self.after_commit)
         self._tables[table.name] = table
+
+    def _detach(self, table: Table) -> None:
+        """Cut off a table this database stops managing (dropped, rolled back, replaced).
+
+        Somebody may still hold the old ``Table``. On a journalled database
+        every later change through it is refused with ``DatabaseError`` (and
+        undone), so the journal never mentions a table that isn't there. On
+        a plain database it becomes a table of its own, as before: changes
+        stay in its memory and are never recorded or saved.
+        """
+        table.set_sink(_refuse_detached if self._store is not None else None)
 
     def _on_change(self, change: Change) -> None:
         """Commit *change* now, or keep it for the active transaction."""
@@ -358,7 +384,7 @@ class Database:
         try:
             self._on_change(Change(ChangeKind.CREATE_TABLE, name, schema=schema))
         except BaseException:
-            del self._tables[name]
+            self._detach(self._tables.pop(name))
             if was_dropped:
                 self._dropped.add(name)
             raise
@@ -393,6 +419,10 @@ class Database:
         (On a journalled database the drop is durable at once, and the
         table's snapshot file goes at the next checkpoint.)
 
+        The old ``Table`` object is detached (see ``_detach``): when
+        journalled, changes made through it afterwards raise
+        ``DatabaseError``.
+
         Args:
             name: The table name.
 
@@ -406,11 +436,12 @@ class Database:
         table = self._tables.pop(name)
         was_dropped = name in self._dropped
         self._dropped.add(name)
+        self._detach(table)
         try:
             self._on_change(Change(ChangeKind.DROP_TABLE, name))
         except BaseException:
             # A note can't carry a whole table, so put the very same one back.
-            self._tables[name] = table
+            self._adopt(table)
             if not was_dropped:
                 self._dropped.discard(name)
             raise

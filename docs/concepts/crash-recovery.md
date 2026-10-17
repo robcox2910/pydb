@@ -109,6 +109,51 @@ follows the script and crashes. The test works out, from the seed alone,
 what the committed rows *must* be, reopens the folder and checks they
 match exactly.
 
+## Binders That Were Thrown Away
+
+What if you're still holding a binder after it was thrown away -- a table
+you dropped, a table made in a transaction that rolled back, or an old one
+whose name now belongs to a brand-new table? If PyDB let you write in it,
+the diary would say "add a card to *cards*" for a binder that no longer
+exists, and the next recovery would get confused.
+
+So on a journalled database, the old `Table` object is **detached**: every
+change through it is refused with a `DatabaseError` (and undone), and
+nothing reaches the diary. Ask the database for the table again with
+`get_table()`.
+
+```python
+import tempfile
+from pathlib import Path
+
+from pydb.database import Database, DatabaseError
+from pydb.schema import Column, Schema
+from pydb.types import DataType
+
+with tempfile.TemporaryDirectory() as tmp:
+    db = Database(Path(tmp) / "cards", journal=True)
+    old = db.create_table("cards", Schema(columns=[Column("name", DataType.TEXT)]))
+    db.drop_table("cards")
+    db.create_table("cards", Schema(columns=[Column("name", DataType.TEXT)]))
+    try:
+        old.insert({"name": "Ghost"})
+    except DatabaseError as error:
+        print(error)
+    print(db.get_table("cards").row_count)
+    db.close()
+```
+
+Output:
+
+```
+Table 'cards' is no longer part of the database (it was dropped, rolled back or replaced); get it again with get_table()
+0
+```
+
+(On a plain database, without `journal=True`, a detached table just
+becomes a binder of its own, as before: you can still change it in memory,
+but nothing is recorded and `save()` never writes it.)
+
 ## What We Test
 
 - Committed rows survive a real crash (a child process and `os._exit`).
@@ -118,6 +163,9 @@ match exactly.
 - The next ID and the next LSN carry on correctly after reopening.
 - A random crash anywhere in a random script gives back exactly the
   committed state (the property test), and reopening twice changes nothing.
+- Writing through a dropped, rolled-back or replaced table is refused, so
+  a crash right after it still reopens cleanly (the property test also
+  drops and recreates the table now and then).
 - A damaged middle line raises `JournalCorruptError`; `repair=True` keeps
   the commits before it.
 

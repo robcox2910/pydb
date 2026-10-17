@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 
-from pydb.database import Database
+from pydb.database import Database, DatabaseError
 from pydb.record import Value
 from pydb.schema import Column, Schema
 from pydb.table import Table
@@ -33,6 +33,7 @@ from pydb.types import DataType
 _ARGS_WITH_COUNT = 4
 _DEFAULT_COUNT = 10
 _NO_CRASH_EXIT = 3  # not 1, so the parent can tell it apart from the crash
+_STALE_WRITE_EXIT = 4  # a write through a dropped table was wrongly accepted
 _UPDATED_ID = 2
 _DELETED_ID = 3
 _NEW_POWER = 99
@@ -82,6 +83,56 @@ def crash_mid_transaction(folder: Path, count: int) -> None:
     os._exit(1)
 
 
+STALE_REFUSED = "stale write refused"
+
+
+def _try_stale_write(table: Table) -> None:
+    """Write through a table the database no longer manages; report a refusal."""
+    try:
+        table.insert({"name": "ghost", "power": -1})
+    except DatabaseError:
+        sys.stdout.write(f"{STALE_REFUSED}\n")
+        sys.stdout.flush()
+
+
+def _cards_with_rows(db: Database, count: int) -> Table:
+    """Create the cards table and commit *count* rows to it."""
+    table = db.create_table("cards", _cards_schema())
+    for number in range(count):
+        table.insert({"name": f"card{number}", "power": number})
+    return table
+
+
+def stale_after_drop(folder: Path, count: int) -> None:
+    """Drop the cards table, write through the old reference, then crash."""
+    db = Database(folder, journal=True)
+    cards = _cards_with_rows(db, count)
+    db.drop_table("cards")
+    _try_stale_write(cards)
+    os._exit(1)
+
+
+def stale_after_rollback(folder: Path, count: int) -> None:
+    """Create a table in a rolled-back transaction, write to it, then crash."""
+    db = Database(folder, journal=True)
+    _cards_with_rows(db, count)
+    txn = Transaction(db)
+    extra = db.create_table("extra", _cards_schema())
+    txn.rollback()
+    _try_stale_write(extra)
+    os._exit(1)
+
+
+def stale_after_recreate(folder: Path, count: int) -> None:
+    """Drop and recreate the cards table, write through the old reference, then crash."""
+    db = Database(folder, journal=True)
+    cards = _cards_with_rows(db, count)
+    db.drop_table("cards")
+    db.create_table("cards", _cards_schema())
+    _try_stale_write(cards)
+    os._exit(1)
+
+
 def checkpoint_workload(db: Database, *, prior_checkpoint: bool) -> None:
     """Do the work the checkpoint crash test checks (also run by the parent).
 
@@ -123,6 +174,7 @@ _MIN_STEPS = 12
 _MAX_STEPS = 28
 _MAX_TXN_OPS = 4
 _CHECKPOINT_CHANCE = 0.1
+_RECREATE_CHANCE = 0.06
 _AUTO_CHANCE = 0.45
 _COMMIT_CHANCE = 0.65
 _FIRST_DAY = date(2026, 10, 1)
@@ -154,9 +206,13 @@ class Op:
 
 @dataclass(frozen=True)
 class Step:
-    """One step of a script: an autocommit op, a transaction, or a checkpoint."""
+    """One step of a script: an autocommit op, a transaction, a checkpoint or a recreate.
 
-    kind: str  # "auto", "txn" or "checkpoint"
+    A ``recreate`` drops the table, creates it again empty, and then tries
+    to write through the old ``Table`` object (which must be refused).
+    """
+
+    kind: str  # "auto", "txn", "checkpoint" or "recreate"
     ops: tuple[Op, ...] = ()
     commit: bool = True
 
@@ -225,7 +281,10 @@ def _random_step(rng: random.Random, rows: Rows, next_id: int) -> Step:
     roll = rng.random()
     if roll < _CHECKPOINT_CHANCE:
         return Step("checkpoint")
-    if roll < _CHECKPOINT_CHANCE + _AUTO_CHANCE:
+    roll -= _CHECKPOINT_CHANCE
+    if roll < _RECREATE_CHANCE:
+        return Step("recreate")
+    if roll < _RECREATE_CHANCE + _AUTO_CHANCE:
         return Step("auto", (_random_op(rng, rows, next_id),))
     scratch, scratch_next = dict(rows), next_id
     ops: list[Op] = []
@@ -238,6 +297,9 @@ def _random_step(rng: random.Random, rows: Rows, next_id: int) -> Step:
 
 def _commit_step(rows: Rows, next_id: int, step: Step) -> int:
     """Apply a step's *committed* effect to the model and return the next ID."""
+    if step.kind == "recreate":
+        rows.clear()
+        return 1
     if step.kind == "auto" or (step.kind == "txn" and step.commit):
         for op in step.ops:
             next_id = apply_op(rows, next_id, op)
@@ -306,6 +368,16 @@ def _run_step(db: Database, step: Step) -> None:
     if step.kind == "checkpoint":
         db.checkpoint()
         return
+    if step.kind == "recreate":
+        old = db.get_table(PROPERTY_TABLE)
+        db.drop_table(PROPERTY_TABLE)
+        db.create_table(PROPERTY_TABLE, property_schema())
+        try:
+            old.insert({"name": "ghost", "power": -1, "day": _FIRST_DAY})
+        except DatabaseError:
+            return
+        sys.stderr.write("a write through the dropped table was accepted\n")
+        os._exit(_STALE_WRITE_EXIT)
     if step.kind == "auto":
         _run_ops(lambda: db.get_table(PROPERTY_TABLE), step.ops)
         return
@@ -340,6 +412,9 @@ def crash_randomly(folder: Path, seed: int) -> None:
 _SCENARIOS = {
     "commit": commit_rows,
     "mid_txn": crash_mid_transaction,
+    "stale_drop": stale_after_drop,
+    "stale_rollback": stale_after_rollback,
+    "stale_recreate": stale_after_recreate,
 }
 
 

@@ -1,8 +1,9 @@
 """A randomised crash test: whatever happens, recovery gives back exactly the commits.
 
 Each seed builds a random "script" of work -- single inserts, updates and
-deletes, small transactions that are committed or rolled back, and the odd
-checkpoint -- plus a random moment to pull the plug. A real child process
+deletes, small transactions that are committed or rolled back, the odd
+checkpoint, and now and then dropping and recreating the table (then trying
+to write through the dropped one, which must be refused) -- plus a random moment to pull the plug. A real child process
 follows the script and dies with ``os._exit`` at that moment (sometimes in
 the middle of a transaction, sometimes in the middle of a checkpoint).
 
@@ -67,14 +68,21 @@ class TestPlans:
         assert any(p.crash.txn_ops is None and p.crash.checkpoint_step is None for p in plans)
 
     def test_seeds_cover_every_kind_of_step(self) -> None:
-        """Across the seeds, see autocommits, commits, rollbacks and checkpoints."""
+        """Across the seeds, see autocommits, commits, rollbacks, checkpoints and recreates."""
         steps = [step for seed in _SEEDS for step in plan_for(seed).steps]
         kinds = {step.kind for step in steps}
-        assert kinds == {"auto", "txn", "checkpoint"}
+        assert kinds == {"auto", "txn", "checkpoint", "recreate"}
         assert any(s.kind == "txn" and s.commit for s in steps)
         assert any(s.kind == "txn" and not s.commit for s in steps)
         op_kinds = {op.kind for step in steps for op in step.ops}
         assert op_kinds == {"insert", "update", "delete"}
+
+    def test_some_recreates_run_before_the_crash(self) -> None:
+        """Drop and recreate the table (and write via the old one) before some crashes."""
+        plans = [plan_for(seed) for seed in _SEEDS]
+        assert any(
+            step.kind == "recreate" for p in plans for step in p.steps[: p.crash.after_steps]
+        )
 
     def test_some_seeds_checkpoint_automatically(self) -> None:
         """Use a tiny checkpoint size for some seeds and the default for others."""
