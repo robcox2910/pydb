@@ -154,6 +154,26 @@ class TestRecovery:
             f.write('{"type": "OP", "txn": "t2", "ta')
         assert len(wal.recover()) == 1
 
+    def test_last_line_torn_inside_a_character_is_ignored(self, tmp_path: Path) -> None:
+        """A torn final line that isn't even valid UTF-8 is skipped like any torn line."""
+        wal = WriteAheadLog(tmp_path / "wal.log")
+        wal.log_begin("t1")
+        wal.log_operation("t1", "cards", "INSERT", {"id": "1"})
+        wal.log_commit("t1")
+        with wal.path.open("ab") as f:
+            f.write(b'{"type": "OP", "txn": "t\xc3')  # cut half-way through "\xc3\xa9"
+        assert len(wal.recover()) == 1
+
+    def test_bytes_that_are_not_text_in_the_middle_are_an_error(self, tmp_path: Path) -> None:
+        """A line that isn't UTF-8 before the last line is corruption, so WALError."""
+        wal = WriteAheadLog(tmp_path / "wal.log")
+        wal.log_begin("t1")
+        with wal.path.open("ab") as f:
+            f.write(b"\x80\n")
+        wal.log_commit("t1")
+        with pytest.raises(WALError, match="line 2"):
+            wal.recover()
+
     def test_damage_in_the_middle_is_an_error(self, tmp_path: Path) -> None:
         """Regression: a corrupt middle entry used to be skipped silently."""
         wal = WriteAheadLog(tmp_path / "wal.log")
