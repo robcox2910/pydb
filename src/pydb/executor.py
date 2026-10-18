@@ -17,24 +17,25 @@ the requested operation:
 """
 
 from collections.abc import Sequence
-from datetime import date, datetime
-from typing import Any, Protocol
+from typing import Any
 
+from pydb.aggregates import compute_aggregate, group_records
 from pydb.database import Database
-from pydb.errors import PyDBError
+from pydb.errors import PyDBError, QueryError
+from pydb.nulls import is_true, null_sort_key
 from pydb.planner import plan_query
 from pydb.query import (
-    AggFunc,
-    AggregateColumn,
     And,
     Condition,
+    Not,
     Operator,
     Or,
     Query,
+    RowLike,
     SortDirection,
     Subquery,
     WhereClause,
-    compare_values,
+    compare3,
 )
 from pydb.record import Record, Value
 from pydb.schema import Schema
@@ -55,26 +56,10 @@ from pydb.statements import (
 )
 from pydb.table import Table
 
-
-class QueryError(PyDBError):
-    """Raise when a query or statement cannot be executed."""
-
+__all__ = ["ExecuteResult", "QueryError", "execute"]
 
 # The result of executing any SQL statement.
 ExecuteResult = list[dict[str, Value]]
-
-
-class _RowLike(Protocol):
-    """Anything that answers ``row[column_name]`` with a value.
-
-    Both ``Record`` objects (from a single table) and plain dicts (from
-    JOINs or views) fit this shape, so the aggregate helpers can work on
-    either without caring which one they were handed.
-    """
-
-    def __getitem__(self, key: str, /) -> Value:
-        """Return the value stored under *key*."""
-        ...
 
 
 # ---------------------------------------------------------------------------
@@ -137,13 +122,13 @@ def _apply_order_by(rows: ExecuteResult, query: Query) -> ExecuteResult:
 
     Like sorting a stack of index cards alphabetically or by number --
     this helper does the sorting step so every handler doesn't have to
-    repeat the same code.
+    repeat the same code. NULLs come first ascending and last descending.
     """
     if query.order_by is None:
         return rows
     col = query.order_by.column
     reverse = query.order_by.direction == SortDirection.DESC
-    return sorted(rows, key=lambda r: r[col], reverse=reverse)  # type: ignore[return-value]
+    return sorted(rows, key=lambda r: null_sort_key(r[col]), reverse=reverse)
 
 
 def _apply_limit(rows: ExecuteResult, query: Query) -> ExecuteResult:
@@ -316,6 +301,7 @@ def _select_records(table: Table, where: WhereClause) -> list[Record]:
     if (
         isinstance(where, Condition)
         and where.operator == Operator.EQ
+        and where.value is not None  # col = NULL is never TRUE (see the planner)
         and not isinstance(where.value, (Subquery, list))
     ):
         index = table.get_index_for_column(where.column)
@@ -328,34 +314,34 @@ def _select_records(table: Table, where: WhereClause) -> list[Record]:
     return table.select(where=where.matches)
 
 
-def _execute_aggregate(query: Query, records: Sequence[_RowLike]) -> ExecuteResult:
+def _execute_aggregate(query: Query, records: Sequence[RowLike]) -> ExecuteResult:
     """Execute a query with aggregate functions and optional GROUP BY.
 
     Aggregates are like summary stats: instead of showing every row,
     you get a single answer (like COUNT or SUM) for each group.
     """
-    groups = _group_records(records, query.group_by) if query.group_by else {(): list(records)}
+    groups = group_records(records, query.group_by) if query.group_by else {(): list(records)}
 
     result: ExecuteResult = []
-    for group_records in groups.values():
+    for members in groups.values():
         row: dict[str, Value] = {}
 
         # Add GROUP BY column values.
-        if query.group_by and group_records:
+        if query.group_by and members:
             for col in query.group_by:
-                row[col] = group_records[0][col]
+                row[col] = members[0][col]
 
         # Add plain columns (must be in GROUP BY).
         for col in query.columns:
             if col not in query.group_by:
                 msg = f"Column {col!r} must appear in GROUP BY or an aggregate function"
                 raise QueryError(msg)
-            if group_records:
-                row[col] = group_records[0][col]
+            if members:
+                row[col] = members[0][col]
 
         # Compute aggregates.
         for agg in query.aggregates:
-            row[agg.alias] = _compute_aggregate(agg, group_records)
+            row[agg.alias] = compute_aggregate(agg, members)
 
         result.append(row)
 
@@ -366,49 +352,6 @@ def _execute_aggregate(query: Query, records: Sequence[_RowLike]) -> ExecuteResu
     # Apply ORDER BY and LIMIT using shared helpers.
     result = _apply_order_by(result, query)
     return _apply_limit(result, query)
-
-
-def _group_records(
-    records: Sequence[_RowLike], group_by: list[str]
-) -> dict[tuple[Value, ...], list[_RowLike]]:
-    """Group records by the values of the GROUP BY columns.
-
-    Like sorting trading cards into piles by team -- each pile is a group.
-
-    Returns:
-        A dict mapping group keys to lists of records.
-
-    """
-    groups: dict[tuple[Value, ...], list[_RowLike]] = {}
-    for record in records:
-        key = tuple(record[col] for col in group_by)
-        groups.setdefault(key, []).append(record)
-    return groups
-
-
-def _compute_aggregate(agg: AggregateColumn, records: Sequence[_RowLike]) -> Value:
-    """Compute a single aggregate function over a group of records."""
-    if agg.function in (AggFunc.SUM, AggFunc.AVG) and any(
-        isinstance(r[agg.column], (date, datetime)) for r in records
-    ):
-        msg = f"{agg.function.value} is not supported on DATE or TIMESTAMP columns"
-        raise QueryError(msg)
-    match agg.function:
-        case AggFunc.COUNT:
-            return len(records)
-        case AggFunc.SUM:
-            values: list[Any] = [r[agg.column] for r in records]
-            return sum(values)
-        case AggFunc.AVG:
-            avg_values: list[Any] = [r[agg.column] for r in records]
-            total = sum(float(v) for v in avg_values)
-            return total / len(records) if records else 0.0
-        case AggFunc.MIN:
-            values: list[Any] = [r[agg.column] for r in records]
-            return min(values) if values else 0
-        case AggFunc.MAX:
-            vals: list[Any] = [r[agg.column] for r in records]
-            return max(vals) if vals else 0
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +384,8 @@ def _execute_select_with_join(
     combined: list[dict[str, Value]] = []
     for left_rec in left_records:
         for right_rec in right_records:
-            if left_rec[left_join_col] == right_rec[right_join_col]:
+            # A NULL key never matches anything -- not even another NULL.
+            if is_true(compare3(left_rec[left_join_col], Operator.EQ, right_rec[right_join_col])):
                 row: dict[str, Value] = {}
                 for col in left_table.schema.column_names:
                     row[f"{left_name}.{col}"] = left_rec[col]
@@ -487,13 +431,9 @@ def _matches_dict(clause: WhereClause, row: dict[str, Value]) -> bool:
     """Check if a combined row dict matches a WHERE clause.
 
     Unlike Condition.matches (which works on Record objects), this works
-    on plain dicts produced by JOINs or views.
+    on plain dicts produced by JOINs or views. Only TRUE keeps the row.
     """
-    if isinstance(clause, Condition):
-        return compare_values(row[clause.column], clause.operator, clause.value)
-    if isinstance(clause, And):
-        return _matches_dict(clause.left, row) and _matches_dict(clause.right, row)
-    return _matches_dict(clause.left, row) or _matches_dict(clause.right, row)
+    return is_true(clause.evaluate(row))
 
 
 def _check_date_comparisons(clause: WhereClause, table: Table) -> None:
@@ -509,6 +449,8 @@ def _validate_where_columns(clause: WhereClause, valid_columns: set[str]) -> Non
         if clause.column not in valid_columns:
             msg = f"Unknown column {clause.column!r} in WHERE clause"
             raise QueryError(msg)
+    elif isinstance(clause, Not):
+        _validate_where_columns(clause.operand, valid_columns)
     else:
         _validate_where_columns(clause.left, valid_columns)
         _validate_where_columns(clause.right, valid_columns)
@@ -538,6 +480,8 @@ def _resolve_subqueries(clause: WhereClause, database: Database) -> WhereClause:
                 raise QueryError(msg)
             resolved = next(iter(inner_results[0].values()))
         return Condition(column=clause.column, operator=clause.operator, value=resolved)
+    if isinstance(clause, Not):
+        return Not(_resolve_subqueries(clause.operand, database))
     if isinstance(clause, And):
         return And(
             _resolve_subqueries(clause.left, database), _resolve_subqueries(clause.right, database)
@@ -554,12 +498,8 @@ def _resolve_subqueries(clause: WhereClause, database: Database) -> WhereClause:
 
 
 def _sort_records(records: list[Record], column: str, *, reverse: bool) -> list[Record]:
-    """Sort records by a column value."""
-
-    def sort_key(record: Record) -> Any:
-        return record[column]
-
-    return sorted(records, key=sort_key, reverse=reverse)
+    """Sort records by a column value (NULLs first ascending, last descending)."""
+    return sorted(records, key=lambda record: null_sort_key(record[column]), reverse=reverse)
 
 
 def _project(

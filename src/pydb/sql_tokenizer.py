@@ -76,6 +76,7 @@ KEYWORDS = frozenset(
         "TRUE",
         "FALSE",
         "BETWEEN",
+        "IS",
     }
 )
 

@@ -9,7 +9,7 @@ only ever meets DATE values, never a bare string.
 from datetime import date, datetime
 
 from pydb.errors import SchemaError
-from pydb.query import Condition, Subquery, WhereClause
+from pydb.query import Condition, Not, Subquery, WhereClause
 from pydb.record import Value
 from pydb.schema import Schema
 from pydb.types import DataType, from_iso
@@ -57,11 +57,17 @@ def mismatched_date_comparison(clause: WhereClause, schema: Schema) -> str | Non
         An error message for the first bad comparison, or None if all is well.
 
     """
+    if isinstance(clause, Not):
+        return mismatched_date_comparison(clause.operand, schema)
     if not isinstance(clause, Condition):
         return mismatched_date_comparison(clause.left, schema) or mismatched_date_comparison(
             clause.right, schema
         )
-    if clause.column not in schema.column_names or isinstance(clause.value, (list, Subquery)):
+    if (
+        clause.column not in schema.column_names
+        or clause.value is None  # NULL meets any type (and IS NULL has no value)
+        or isinstance(clause.value, (list, Subquery))
+    ):
         return None
     wanted = next(c.data_type for c in schema.columns if c.name == clause.column)
     value = clause.value
