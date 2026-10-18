@@ -58,6 +58,7 @@ nav:
     - Torn Writes: concepts/torn-writes.md
     - Locks and Threads: concepts/locks-and-threads.md
     - The Outbox: concepts/outbox.md
+  - Property Testing: property-testing.md
   # series-nav:start
   - The series:
       - Series home: https://robcox2910.github.io/
