@@ -4,11 +4,20 @@ Load data from a spreadsheet (CSV file) into a table, or export a
 table's data to a CSV file. This bridges PyDB to the real world --
 kids can import their own data or share it with other tools.
 
-A CSV file has no way to write "unknown", so NULL is exported as an empty
-field. On import an empty field is NULL for every column type except
-TEXT: there an empty field stays the empty string ``""``, because the two
-cannot be told apart. An empty field in a NOT NULL column that is not
-TEXT is an error.
+NULL and the empty string look alike in a CSV file, so PyDB tells them
+apart with quotes (``csv.QUOTE_NOTNULL``). Every real value is written in
+quotes -- ``"Pikachu"``, ``"55"``, and the empty string as ``""`` -- while
+NULL is a *bare* empty field with no quotes at all::
+
+    "name","note"
+    "a",          <- note is NULL
+    "b",""        <- note is the empty string
+
+Reading, a bare empty field is NULL. A quoted ``""`` is the empty string
+in a TEXT column and NULL in any other column (an empty number is no
+number). Unquoted values from a hand-written file still work. An empty
+field in a NOT NULL column that is not TEXT is an error, and so is a bare
+empty field in a NOT NULL TEXT column.
 """
 
 import csv
@@ -36,24 +45,32 @@ def export_table(table: Table, file_path: str | Path) -> int:
     Returns:
         The number of rows written.
 
+    Raises:
+        CSVError: If a row cannot be written -- a one-column row holding
+            NULL would be a blank line, which CSV readers skip.
+
     """
     path = Path(file_path)
     columns = table.schema.column_names
     records = table.select()
 
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, quoting=csv.QUOTE_NOTNULL)
         writer.writerow(columns)
         for record in records:
-            writer.writerow([_cell(record[col]) for col in columns])
+            try:
+                writer.writerow([_cell(record[col]) for col in columns])
+            except csv.Error as exc:  # a lone NULL would be a blank line
+                msg = (
+                    f"Record {record.record_id}: a one-column row of NULL cannot be written ({exc})"
+                )
+                raise CSVError(msg) from exc
 
     return len(records)
 
 
 def _cell(value: Value) -> Value:
-    """Return the CSV cell for a value (dates become ISO text, NULL an empty field)."""
-    if value is None:
-        return ""
+    """Return the CSV cell for a value (dates become ISO text; NULL stays None)."""
     return to_iso(value) if isinstance(value, date) else value
 
 
@@ -84,14 +101,13 @@ def import_csv(table: Table, file_path: str | Path) -> int:
 
     count = 0
     with path.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(f, quoting=csv.QUOTE_NOTNULL)
         for row_num, row in enumerate(reader, start=2):  # Row 2 = first data row.
             values: dict[str, Value] = {}
             for col_name, raw_value in row.items():
                 if col_name is None or col_name not in type_map:
                     continue
-                val = raw_value if raw_value is not None else ""
-                values[col_name] = _coerce_value(val, type_map[col_name], col_name, row_num)
+                values[col_name] = _coerce_value(raw_value, type_map[col_name], col_name, row_num)
             try:
                 table.insert(values)
             except Exception as exc:
@@ -102,23 +118,24 @@ def import_csv(table: Table, file_path: str | Path) -> int:
     return count
 
 
-def _coerce_value(raw: str, data_type: DataType, col_name: str, row_num: int) -> Value:
+def _coerce_value(raw: str | None, data_type: DataType, col_name: str, row_num: int) -> Value:
     """Convert a CSV string value to the correct Python type.
 
     Args:
-        raw: The raw string from the CSV.
+        raw: The raw string from the CSV (None for a bare empty field).
         data_type: The expected data type.
         col_name: The column name (for error messages).
         row_num: The CSV row number (for error messages).
 
     Returns:
-        The coerced value; an empty field is NULL unless the column is TEXT.
+        The coerced value: NULL for a bare empty field, and for any empty
+        field outside TEXT.
 
     Raises:
         CSVError: If the value can't be converted.
 
     """
-    if not raw and data_type is not DataType.TEXT:
+    if raw is None or (not raw and data_type is not DataType.TEXT):
         return None
     try:
         match data_type:

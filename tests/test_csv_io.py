@@ -57,8 +57,8 @@ class TestExport:
         content = out.read_text(encoding="utf-8")
         lines = content.strip().split("\n")
         assert len(lines) == THREE_ROWS  # header + 2 data rows
-        assert "name,power" in lines[0]
-        assert "Pikachu,55" in lines[1]
+        assert '"name","power"' in lines[0]
+        assert '"Pikachu","55"' in lines[1]
 
 
 class TestImport:

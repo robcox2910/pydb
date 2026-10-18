@@ -49,13 +49,30 @@ automatically converted to the right type -- "55" becomes the integer
 
 ## Empty Fields and NULL
 
-A CSV file has no way to write "unknown", so a [NULL](null.md) is
-exported as an **empty field** (nothing between the commas). Importing,
-an empty field becomes NULL -- except in a TEXT column. There it stays
-the empty string `""`, because in a CSV file an empty string and a NULL
-look exactly the same, and PyDB can't tell which one you meant. An empty
-field in a NOT NULL column that isn't TEXT is an error, and a nullable
-column missing from the header is NULL in every imported row.
+A [NULL](null.md) and an empty piece of text (`""`) are different things,
+but in a CSV file both look like nothing between two commas. PyDB tells
+them apart with **quotes**: it writes every real value in quotes, and
+NULL as a *bare* empty field with no quotes at all.
+
+```
+"name","note"
+"Pikachu",          <- note is NULL (unknown)
+"Raichu",""         <- note is the empty string
+```
+
+Importing, PyDB reads the file the same way:
+
+- A bare empty field is NULL, whatever the column type.
+- A quoted `""` is the empty string in a TEXT column, and NULL in any
+  other column (an empty number is no number at all).
+- Unquoted values, as in a hand-written file, still work.
+- An empty field in a NOT NULL column is an error (a quoted `""` is fine
+  in a NOT NULL TEXT column), and a nullable column missing from the
+  header is NULL in every imported row.
+
+One corner case: a table with a **single** column can't export a row
+whose value is NULL -- that row would be a completely blank line, which
+CSV readers skip -- so `export_table` raises a `CSVError` instead.
 
 ## What We Test
 
@@ -64,8 +81,8 @@ column missing from the header is NULL in every imported row.
 - Round-trip (export → import) preserves all data.
 - Missing files raise a clear error.
 - Wrong types raise a clear error with the row number.
-- NULL is exported as an empty field and imported back as NULL (TEXT
-  columns get `""`).
+- NULL is exported as a bare empty field and `""` as a quoted one, and
+  both come back exactly -- even several NULLs in a UNIQUE TEXT column.
 
 ## Next Up
 

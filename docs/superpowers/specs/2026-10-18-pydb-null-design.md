@@ -54,9 +54,14 @@ database idea worth teaching: "we don't know" is different from "zero" or
    - The formatter shows `NULL`.
    - CSV export writes an empty field for NULL.
    - CSV import reads an empty field as NULL for nullable non-TEXT columns.
-     For TEXT columns an empty field stays `""`, since it can't be told
-     apart; this is documented. A NOT NULL non-TEXT column given an empty
-     field is an error.
+     A NOT NULL non-TEXT column given an empty field is an error.
+   - *Revised after review:* TEXT NULLs must round-trip too (two NULLs in
+     a UNIQUE TEXT column must not come back as clashing `''`). CSV files
+     are written and read with `csv.QUOTE_NOTNULL`: every real value is
+     quoted (`""` for the empty string) and NULL is a bare empty field. On
+     import a bare empty field is NULL for every type; a quoted `""` is
+     `""` in TEXT and NULL elsewhere. A one-column row holding NULL cannot
+     be written (it would be a blank line) and is a `CSVError`.
 6. **Docs:** a kid-friendly `docs/concepts/null.md` ("the empty box with a
    question mark": not zero, not blank, *unknown*; why `NULL = NULL` isn't
    true; the truth table). Update the schema, constraints, aggregations and
