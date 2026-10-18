@@ -1,10 +1,11 @@
 site_name: PyDB
-site_description: An educational database engine built from scratch in Python
+site_description: "Build your own SQL database in Python: tables, joins, B-tree indexes, a query planner and transactions, explained for learners."
 site_url: https://robcox2910.github.io/pydb/
 
 # theme:start
 theme:
   name: material
+  custom_dir: overrides
   palette:
     - scheme: default
       primary: deep-purple
@@ -24,6 +25,13 @@ theme:
     - navigation.expand
     - toc.integrate
     - search.highlight
+
+# Social cards need cairo, so they are off unless SOCIAL_CARDS is set (the
+# shared docs workflow sets it). A repo must not add its own plugins key.
+plugins:
+  - search
+  - social:
+      enabled: !ENV [SOCIAL_CARDS, false]
 # theme:end
 
 nav:
