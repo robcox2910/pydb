@@ -5,6 +5,8 @@ verify that nothing gets lost in translation -- like checking that your
 letter arrives exactly as you wrote it.
 """
 
+import json
+
 import pytest
 
 from pydb.record import Record
@@ -166,6 +168,51 @@ class TestDeserializeTableData:
         """A JSON array (not object) should raise SerializationError."""
         with pytest.raises(SerializationError, match="must be a JSON object"):
             deserialize_table_data("[1, 2, 3]")
+
+    # Found by the property tests: each of these crashed with TypeError or
+    # SchemaError instead of being refused with SerializationError.
+    @pytest.mark.parametrize(
+        "schema",
+        [None, {"columns": None}, {"columns": []}, {"columns": [None]}],
+        ids=["no-schema", "no-columns", "zero-columns", "null-column"],
+    )
+    def test_malformed_schema_raises(self, schema: object) -> None:
+        """A table file whose schema is the wrong shape is refused with SerializationError."""
+        no_rows: list[object] = []
+        document = {"name": "cards", "schema": schema, "next_id": 1, "records": no_rows}
+        with pytest.raises(SerializationError, match="Invalid schema data"):
+            deserialize_table_data(json.dumps(document))
+
+    @pytest.mark.parametrize(
+        "records",
+        [
+            None,
+            [{"record_id": float("inf"), "data": {}}],
+            [{"record_id": 1, "data": {"power": "x"}}],
+        ],
+        ids=["no-records", "infinite-id", "text-in-integer-column"],
+    )
+    def test_malformed_records_raise(self, records: object) -> None:
+        """A table file whose rows are the wrong shape is refused with SerializationError."""
+        schema = serialize_schema(_make_schema())
+        document: dict[str, object] = {
+            "name": "cards",
+            "schema": schema,
+            "next_id": 1,
+            "records": records,
+        }
+        with pytest.raises(SerializationError, match="Invalid"):
+            deserialize_table_data(json.dumps(document))
+
+    @pytest.mark.parametrize(
+        "text",
+        ["[" * 100_000, "9" * 5_000],
+        ids=["nested-too-deep", "number-too-long"],
+    )
+    def test_json_python_cannot_read_raises(self, text: str) -> None:
+        """JSON nested too deep, or with a number too long to read, is refused with SerializationError."""
+        with pytest.raises(SerializationError, match="Invalid JSON"):
+            deserialize_table_data(text)
 
 
 class TestDataTypeRoundTrips:

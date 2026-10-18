@@ -58,7 +58,7 @@ from pydb.atomic import atomic_write_text, sync_folder
 from pydb.changes import Change, ChangeKind
 from pydb.errors import PyDBError
 from pydb.record import Value
-from pydb.serializer import deserialize_schema, serialize_schema
+from pydb.serializer import SerializationError, deserialize_schema, serialize_schema
 from pydb.types import DataType, from_iso, to_iso
 
 _HEADER_PREFIX = b"PYDBJ1 "
@@ -189,7 +189,7 @@ def _parse_line(line: bytes) -> Entry | None:
             return None
         obj = json.loads(body)
         return int(obj["lsn"]), [_decode_change(c) for c in obj["changes"]]
-    except ValueError, KeyError, TypeError, IndexError, AttributeError:
+    except ValueError, KeyError, TypeError, IndexError, AttributeError, SerializationError:
         return None
 
 

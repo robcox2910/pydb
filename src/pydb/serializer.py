@@ -7,12 +7,13 @@ forth so nothing gets lost.
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, cast
 
-from pydb.errors import PyDBError
+from pydb.errors import PyDBError, SchemaError
 from pydb.record import Record, Value
 from pydb.schema import Column, Schema
 from pydb.types import DataType, from_iso, to_iso
@@ -20,6 +21,23 @@ from pydb.types import DataType, from_iso, to_iso
 
 class SerializationError(PyDBError):
     """Raise when data cannot be serialized or deserialized."""
+
+
+# What Python raises when a file has the right labels but the wrong things
+# under them: a number where a list belongs (TypeError), text where a number
+# belongs (ValueError), ``Infinity`` as a record ID (OverflowError), a
+# schema with no columns or a bad date (SchemaError).
+_MALFORMED = (KeyError, TypeError, ValueError, OverflowError, SchemaError)
+
+
+@contextmanager
+def _refuse_malformed(what: str) -> Iterator[None]:
+    """Turn any error from reading malformed *what* data into a ``SerializationError``."""
+    try:
+        yield
+    except _MALFORMED as exc:
+        msg = f"Invalid {what} data: {exc}"
+        raise SerializationError(msg) from exc
 
 
 def _value_to_json(value: Value) -> str | int | float | bool | None:
@@ -98,21 +116,32 @@ def deserialize_schema(data: dict[str, Any]) -> Schema:
         The reconstructed schema.
 
     Raises:
-        SerializationError: If the data is missing required fields.
+        SerializationError: If the data is missing required fields or is
+            the wrong shape.
 
     """
+    with _refuse_malformed("schema"):
+        return _read_schema(data)
+
+
+def _read_schema(data: dict[str, Any]) -> Schema:
+    """Build a schema from its dictionary (``deserialize_schema`` catches the errors)."""
     try:
-        columns_data: list[dict[str, str]] = data["columns"]
+        columns_data: list[dict[str, Any]] = data["columns"]
     except KeyError:
         msg = "Schema data missing 'columns' key"
         raise SerializationError(msg) from None
 
     columns: list[Column] = []
     for col_data in columns_data:
+        name: Any = col_data["name"]
+        if not isinstance(name, str):
+            msg = f"Column name must be text, got {name!r}"
+            raise SerializationError(msg)
         try:
             columns.append(
                 Column(
-                    name=col_data["name"],
+                    name=name,
                     data_type=DataType(col_data["data_type"]),
                     primary_key=bool(col_data.get("primary_key", False)),
                     not_null=bool(col_data.get("not_null", False)),
@@ -156,9 +185,16 @@ def deserialize_record(
         The reconstructed record.
 
     Raises:
-        SerializationError: If the data is missing required fields.
+        SerializationError: If the data is missing required fields or is
+            the wrong shape.
 
     """
+    with _refuse_malformed("record"):
+        return _read_record(data, schema)
+
+
+def _read_record(data: dict[str, Any], schema: Schema) -> Record:
+    """Build a record from its dictionary (``deserialize_record`` catches the errors)."""
     try:
         record_id = int(data["record_id"])
         raw_data: Any = data["data"]
@@ -297,15 +333,24 @@ def deserialize_table(json_str: str) -> StoredTable:
         The table's stored state.
 
     Raises:
-        SerializationError: If the JSON is invalid or missing fields.
+        SerializationError: If the JSON is invalid, missing fields or the
+            wrong shape.
 
     """
     try:
         payload: Any = json.loads(json_str)
-    except json.JSONDecodeError as exc:
+    # ValueError covers JSONDecodeError and a number too long to read;
+    # RecursionError is lists nested thousands deep.
+    except (ValueError, RecursionError) as exc:
         msg = f"Invalid JSON: {exc}"
         raise SerializationError(msg) from exc
 
+    with _refuse_malformed("table"):
+        return _read_table(payload)
+
+
+def _read_table(payload: Any) -> StoredTable:
+    """Build a ``StoredTable`` from parsed JSON (``deserialize_table`` catches the errors)."""
     if not isinstance(payload, dict):
         msg = "Table data must be a JSON object"
         raise SerializationError(msg)
