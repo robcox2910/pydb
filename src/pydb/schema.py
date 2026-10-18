@@ -36,6 +36,11 @@ class Column:
     unique: bool = False
 
 
+def _required(col: Column) -> bool:
+    """Return whether *col* refuses NULL (NOT NULL, or the PRIMARY KEY)."""
+    return col.not_null or col.primary_key
+
+
 class Schema:
     """Define the structure of a table -- its columns and their types.
 
@@ -101,13 +106,35 @@ class Schema:
                 result[name] = check_value(value, DataType.TIMESTAMP)
         return result
 
+    def fill_nulls(self, values: Mapping[str, Value]) -> dict[str, Value]:
+        """Return *values* with every left-out nullable column set to NULL.
+
+        Like a form where you may leave the optional boxes empty: an
+        empty box is stored as NULL (``None``). Required boxes -- NOT NULL
+        and PRIMARY KEY columns -- are not filled, so ``validate`` still
+        reports them as missing.
+
+        Args:
+            values: Column-name-to-value mapping for a new row.
+
+        Returns:
+            A new mapping that also holds the left-out nullable columns.
+
+        """
+        result = dict(values)
+        for col in self._columns:
+            if col.name not in result and not _required(col):
+                result[col.name] = None
+        return result
+
     def validate(self, values: Mapping[str, Value]) -> None:
         """Check that a set of values conforms to this schema.
 
         Validation checks (the bouncer's checklist):
         1. No unknown columns (no gate-crashers).
         2. All required columns are present (no missing tickets).
-        3. Every value has the correct type (no fake IDs).
+        3. Every value has the correct type (no fake IDs). NULL (``None``)
+           fits every type, but only in a column that allows it.
 
         Args:
             values: Column-name-to-value mapping to validate.
@@ -131,6 +158,11 @@ class Schema:
 
         # Check types (check_value is the single exact-type gate).
         for col_name, value in values.items():
+            if value is None:
+                if _required(self._column(col_name)):
+                    msg = f"Column {col_name!r} cannot be NULL"
+                    raise SchemaError(msg)
+                continue
             try:
                 check_value(value, self._column_map[col_name])
             except SchemaError as exc:
@@ -170,7 +202,7 @@ class Schema:
             val = values.get(col.name)
 
             # NOT NULL / PRIMARY KEY: value must be present.
-            if (col.not_null or col.primary_key) and val is None:
+            if _required(col) and val is None:
                 msg = f"Column {col.name!r} cannot be NULL"
                 raise SchemaError(msg)
 
@@ -188,6 +220,10 @@ class Schema:
                     constraint = "PRIMARY KEY" if col.primary_key else "UNIQUE"
                     msg = f"{constraint} violation: {col.name!r} value {val!r} already exists"
                     raise SchemaError(msg)
+
+    def _column(self, name: str) -> Column:
+        """Return the column called *name*."""
+        return next(col for col in self._columns if col.name == name)
 
     @property
     def unique_columns(self) -> list[str]:

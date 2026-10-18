@@ -5,9 +5,16 @@ every page to find "dinosaurs", you look it up in the index and jump
 straight to page 42. A database index does the same thing -- it maps
 column values to record IDs so you can find records without scanning
 the whole table.
+
+NULL is never put in an index. An unknown value has no place in a sorted
+list (is "unknown" bigger or smaller than 5?), and no search could ever
+find it anyway: ``col = NULL`` is UNKNOWN, never TRUE. So inserting or
+deleting a NULL key does nothing, and looking one up finds nothing --
+which also keeps a NULL away from the B-Tree's ``<`` comparisons.
 """
 
-from pydb.btree import DEFAULT_ORDER, BTree, BTreeKey
+from pydb.btree import DEFAULT_ORDER, BTree
+from pydb.record import Value
 
 
 class Index:
@@ -41,17 +48,18 @@ class Index:
         """Return the column this index covers."""
         return self._column
 
-    def insert(self, key: BTreeKey, record_id: int) -> None:
-        """Add a key-record mapping to the index.
+    def insert(self, key: Value, record_id: int) -> None:
+        """Add a key-record mapping to the index (a NULL key is skipped).
 
         Args:
             key: The column value.
             record_id: The record ID that has this value.
 
         """
-        self._tree.insert(key, record_id)
+        if key is not None:
+            self._tree.insert(key, record_id)
 
-    def delete(self, key: BTreeKey, record_id: int) -> bool:
+    def delete(self, key: Value, record_id: int) -> bool:
         """Remove a key-record mapping from the index.
 
         Args:
@@ -59,24 +67,28 @@ class Index:
             record_id: The record ID to disassociate.
 
         Returns:
-            True if the mapping was found and removed.
+            True if the mapping was found and removed (never for NULL).
 
         """
+        if key is None:
+            return False
         return self._tree.delete(key, record_id)
 
-    def find(self, key: BTreeKey) -> list[int]:
+    def find(self, key: Value) -> list[int]:
         """Find all record IDs with the given column value.
 
         Args:
             key: The column value to search for.
 
         Returns:
-            A list of matching record IDs (empty if none found).
+            A list of matching record IDs (empty if none found, or for NULL).
 
         """
+        if key is None:
+            return []
         return self._tree.search(key)
 
-    def find_range(self, min_key: BTreeKey, max_key: BTreeKey) -> list[int]:
+    def find_range(self, min_key: Value, max_key: Value) -> list[int]:
         """Find all record IDs with column values in [min_key, max_key].
 
         Args:
@@ -84,9 +96,11 @@ class Index:
             max_key: Upper bound (inclusive).
 
         Returns:
-            A sorted list of unique matching record IDs.
+            A sorted list of unique matching record IDs (empty if a bound is NULL).
 
         """
+        if min_key is None or max_key is None:
+            return []
         return self._tree.find_range(min_key, max_key)
 
     def __repr__(self) -> str:

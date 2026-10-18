@@ -16,6 +16,7 @@ from pydb.journal import (
     decode_entries,
     encode_entry,
 )
+from pydb.record import Value
 from pydb.schema import Column, Schema
 from pydb.serializer import serialize_schema
 from pydb.types import DataType
@@ -38,7 +39,15 @@ def _all_changes() -> list[Change]:
             Column("born", DataType.DATE, not_null=True),
         ]
     )
-    data = {"id": 1, "born": _DAY, "seen": _TS, "name": "$date", "ok": True, "x": 1.5}
+    data: dict[str, Value] = {
+        "id": 1,
+        "born": _DAY,
+        "seen": _TS,
+        "name": "$date",
+        "ok": True,
+        "x": 1.5,
+        "gone": None,
+    }
     return [
         Change(ChangeKind.CREATE_TABLE, "t", schema=schema),
         Change(ChangeKind.INSERT, "t", record_id=1, data=data),

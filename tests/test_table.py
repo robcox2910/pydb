@@ -84,10 +84,21 @@ class TestTableInsert:
             table.insert({"name": "Pikachu", "power": "banana"})
 
     def test_insert_rejects_missing_columns(self) -> None:
-        """Inserting with missing columns should raise SchemaError."""
-        table = _make_table()
+        """Leaving out a NOT NULL column should raise SchemaError."""
+        schema = Schema(
+            columns=[
+                Column(name="name", data_type=DataType.TEXT),
+                Column(name="power", data_type=DataType.INTEGER, not_null=True),
+            ]
+        )
+        table = Table(name="cards", schema=schema)
         with pytest.raises(SchemaError, match="Missing required"):
             table.insert({"name": "Pikachu"})
+
+    def test_insert_fills_missing_nullable_columns_with_null(self) -> None:
+        """Leaving out a nullable column stores NULL (None)."""
+        record = _make_table().insert({"name": "Pikachu"})
+        assert record["power"] is None
 
     def test_insert_rejects_extra_columns(self) -> None:
         """Inserting with unknown columns should raise SchemaError."""
