@@ -60,7 +60,7 @@ class Schema:
             msg = "A schema must have at least one column"
             raise SchemaError(msg)
         self._columns = tuple(columns)
-        self._column_map: dict[str, DataType] = {col.name: col.data_type for col in columns}
+        self._column_map: dict[str, Column] = {col.name: col for col in columns}
 
     @property
     def columns(self) -> tuple[Column, ...]:
@@ -90,7 +90,8 @@ class Schema:
         """
         result = dict(values)
         for name, value in result.items():
-            expected = self._column_map.get(name)
+            column = self._column_map.get(name)
+            expected = None if column is None else column.data_type
             # bool is a subclass of int, so exclude it explicitly.
             if (
                 expected == DataType.FLOAT
@@ -159,12 +160,12 @@ class Schema:
         # Check types (check_value is the single exact-type gate).
         for col_name, value in values.items():
             if value is None:
-                if _required(self._column(col_name)):
+                if _required(self._column_map[col_name]):
                     msg = f"Column {col_name!r} cannot be NULL"
                     raise SchemaError(msg)
                 continue
             try:
-                check_value(value, self._column_map[col_name])
+                check_value(value, self._column_map[col_name].data_type)
             except SchemaError as exc:
                 msg = f"Column {col_name!r} {exc}"
                 raise SchemaError(msg) from exc
@@ -220,10 +221,6 @@ class Schema:
                     constraint = "PRIMARY KEY" if col.primary_key else "UNIQUE"
                     msg = f"{constraint} violation: {col.name!r} value {val!r} already exists"
                     raise SchemaError(msg)
-
-    def _column(self, name: str) -> Column:
-        """Return the column called *name*."""
-        return next(col for col in self._columns if col.name == name)
 
     @property
     def unique_columns(self) -> list[str]:

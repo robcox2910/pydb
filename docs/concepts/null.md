@@ -118,8 +118,19 @@ can group conditions with brackets: `NOT (code = 3 OR code = 7)`.
 `BETWEEN` and `IN` follow the same rules as what they stand for:
 `code BETWEEN 1 AND 5` is `code >= 1 AND code <= 5`, and
 `code IN (SELECT ...)` is "`code = ` the first answer `OR code = ` the
-second...". A list that holds a NULL makes `NOT code IN (...)` UNKNOWN
-for every row that isn't in it -- a famous SQL surprise!
+second...". You can put the NOT in front or in the middle -- these pairs
+mean exactly the same:
+
+```sql
+NOT code BETWEEN 1 AND 5        code NOT BETWEEN 1 AND 5
+NOT code IN (SELECT ...)        code NOT IN (SELECT ...)
+```
+
+A list that holds a NULL makes `code NOT IN (...)` UNKNOWN for every row
+that isn't in it -- a famous SQL surprise!
+
+> **Heads up:** `IS` is now a SQL keyword (for `IS NULL`), so a column or
+> table can no longer be called `is`.
 
 PyDB keeps these rules in one small module, `pydb.nulls` (`and3`, `or3`,
 `not3`, `in3`), written as `True`, `False` and `None` for UNKNOWN.
@@ -166,11 +177,10 @@ so a UNIQUE column may hold as many NULLs as you like.
 
 - Table files and journal entries store NULL as JSON `null`.
 - The formatter prints `NULL`.
-- CSV has no way to say "unknown", so a NULL is written as an **empty
-  field**. Reading a CSV, an empty field means NULL -- except in a TEXT
-  column, where it stays the empty string `""`, because the two look
-  exactly alike in a CSV file. An empty field in a NOT NULL column that
-  isn't TEXT is an error.
+- In a CSV file every real value is written in quotes, so the empty
+  string is `""`, and a NULL is a **bare empty field** with no quotes.
+  That way both come back exactly when the file is read in again (see
+  [CSV Import/Export](csv.md)).
 
 ## What We Test
 

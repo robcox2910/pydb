@@ -79,6 +79,21 @@ class TestParsing:
         assert isinstance(query, Query)
         assert query.where == Not(Condition("code", Operator.EQ, THREE))
 
+    def test_infix_not_in_and_not_between(self) -> None:
+        """``x NOT IN`` and ``x NOT BETWEEN`` mean ``NOT x IN`` / ``NOT x BETWEEN``."""
+        for infix, prefix in [
+            ("code NOT BETWEEN 1 AND 5", "NOT code BETWEEN 1 AND 5"),
+            ("code NOT IN (SELECT code FROM t)", "NOT code IN (SELECT code FROM t)"),
+        ]:
+            assert parse_sql(f"SELECT * FROM t WHERE {infix}") == parse_sql(
+                f"SELECT * FROM t WHERE {prefix}"
+            )
+
+    def test_not_must_be_followed_by_in_or_between(self) -> None:
+        """``x NOT = 3`` is not valid."""
+        with pytest.raises(ParseError):
+            parse_sql("SELECT * FROM t WHERE code NOT = 3")
+
     def test_parenthesised_condition(self) -> None:
         """Parentheses group conditions."""
         query = parse_sql("SELECT * FROM t WHERE NOT (code = 3 OR code = 7)")
@@ -131,6 +146,7 @@ class TestWhere:
             ("NOT code BETWEEN 1 AND 5", ["d"]),
             ("code BETWEEN NULL AND 5", []),
             ("NOT code BETWEEN 5 AND NULL", ["a"]),
+            ("code NOT BETWEEN 1 AND 5", ["d"]),
         ],
     )
     def test_three_valued_filters(self, tmp_path: Path, where: str, expected: list[str]) -> None:
@@ -148,6 +164,8 @@ class TestWhere:
         # NOT IN a list containing NULL is never TRUE.
         sql = "SELECT name FROM jobs WHERE NOT code IN (SELECT code FROM jobs WHERE name != 'a')"
         assert _run(db, sql) == []
+        sql = "SELECT name FROM jobs WHERE code NOT IN (SELECT code FROM jobs WHERE name = 'a')"
+        assert _names(_run(db, sql)) == ["d"]
 
     def test_scalar_subquery_returning_null(self, tmp_path: Path) -> None:
         """Comparing with a subquery whose answer is NULL keeps nothing."""
@@ -282,6 +300,36 @@ class TestAggregates:
         """COUNT(nope) is an error, not a silent row count."""
         with pytest.raises(QueryError, match="Unknown column"):
             _run(_db(tmp_path), "SELECT COUNT(nope) FROM jobs")
+
+    @pytest.mark.parametrize("func", ["COUNT", "SUM", "AVG", "MIN", "MAX"])
+    def test_unknown_column_with_no_rows(self, tmp_path: Path, func: str) -> None:
+        """An unknown column is an error even when no row is left to read."""
+        with pytest.raises(QueryError, match="Unknown column"):
+            _run(_db(tmp_path), f"SELECT {func}(nope) FROM jobs WHERE code > 100")
+
+    def test_unknown_column_with_no_rows_after_join(self, tmp_path: Path) -> None:
+        """The check also covers joined rows."""
+        db = _db(tmp_path)
+        _run(db, "CREATE TABLE teams (team TEXT, size INTEGER)")
+        sql = "SELECT SUM(teams.nope) FROM jobs JOIN teams ON jobs.team = teams.team"
+        with pytest.raises(QueryError, match="Unknown column"):
+            _run(db, sql)
+
+    def test_unknown_column_with_no_rows_in_a_view(self, tmp_path: Path) -> None:
+        """...and rows from a view."""
+        db = _db(tmp_path)
+        _run(db, "CREATE VIEW v AS SELECT name, code FROM jobs WHERE code > 100")
+        with pytest.raises(QueryError, match="Unknown column"):
+            _run(db, "SELECT MAX(team) FROM v")
+        assert _run(db, "SELECT MAX(code) FROM v") == [{"MAX(code)": None}]
+
+    def test_min_max_on_empty_table(self, tmp_path: Path) -> None:
+        """MIN and MAX of an empty table are NULL."""
+        db = Database(tmp_path)
+        _run(db, "CREATE TABLE t (val INTEGER)")
+        assert _run(db, "SELECT MIN(val), MAX(val) FROM t") == [
+            {"MIN(val)": None, "MAX(val)": None}
+        ]
 
 
 class TestJoin:

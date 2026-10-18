@@ -548,6 +548,21 @@ class _Parser:
         else:
             column = self._parse_qualified_name()
 
+        # ``x NOT IN ...`` / ``x NOT BETWEEN ...`` mean ``NOT (x IN ...)`` / ``NOT (x BETWEEN ...)``.
+        if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "NOT":
+            self._advance()
+            following = self._peek()
+            if following.token_type != TokenType.KEYWORD or following.value not in (
+                "IN",
+                "BETWEEN",
+            ):
+                msg = f"Expected IN or BETWEEN after NOT, got {following.value!r}"
+                raise ParseError(msg)
+            return Not(self._parse_condition_tail(column))
+        return self._parse_condition_tail(column)
+
+    def _parse_condition_tail(self, column: str) -> WhereClause:
+        """Parse what follows the column: IS [NOT] NULL, IN, BETWEEN, or op value."""
         if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "IS":
             self._advance()
             negated = self._peek().token_type == TokenType.KEYWORD and self._peek().value == "NOT"
