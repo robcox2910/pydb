@@ -1,3 +1,8 @@
+---
+title: "Build your own SQL database in Python"
+description: "A relational database built from scratch in Python: SQL parsing, tables, B-tree indexes, a query planner, transactions and a write-ahead log."
+---
+
 # What Is a Database?
 
 Imagine you have a **notebook full of trading cards**. Each page lists one card:

@@ -1,3 +1,8 @@
+---
+title: "What is a write-ahead log (WAL)?"
+description: "How a write-ahead log lets a database recover after a crash by writing every change down first, explained simply with working Python code."
+---
+
 # Write-Ahead Log (WAL)
 
 ## Sticky Notes Before Changes

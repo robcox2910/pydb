@@ -1,3 +1,8 @@
+---
+title: "How a database query planner works"
+description: "How a query planner decides between scanning a table and using an index, and what EXPLAIN shows, with a working SQL database in Python."
+---
+
 # Query Planner
 
 ## The Smart Librarian
