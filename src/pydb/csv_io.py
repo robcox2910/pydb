@@ -3,6 +3,12 @@
 Load data from a spreadsheet (CSV file) into a table, or export a
 table's data to a CSV file. This bridges PyDB to the real world --
 kids can import their own data or share it with other tools.
+
+A CSV file has no way to write "unknown", so NULL is exported as an empty
+field. On import an empty field is NULL for every column type except
+TEXT: there an empty field stays the empty string ``""``, because the two
+cannot be told apart. An empty field in a NOT NULL column that is not
+TEXT is an error.
 """
 
 import csv
@@ -45,7 +51,9 @@ def export_table(table: Table, file_path: str | Path) -> int:
 
 
 def _cell(value: Value) -> Value:
-    """Return the CSV cell for a value (dates become ISO text)."""
+    """Return the CSV cell for a value (dates become ISO text, NULL an empty field)."""
+    if value is None:
+        return ""
     return to_iso(value) if isinstance(value, date) else value
 
 
@@ -104,12 +112,14 @@ def _coerce_value(raw: str, data_type: DataType, col_name: str, row_num: int) ->
         row_num: The CSV row number (for error messages).
 
     Returns:
-        The coerced value.
+        The coerced value; an empty field is NULL unless the column is TEXT.
 
     Raises:
         CSVError: If the value can't be converted.
 
     """
+    if not raw and data_type is not DataType.TEXT:
+        return None
     try:
         match data_type:
             case DataType.TEXT:
