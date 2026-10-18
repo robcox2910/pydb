@@ -242,6 +242,8 @@ def execute(query_or_stmt: Query | Statement, database: Database) -> ExecuteResu
 
 def _execute_select(query: Query, database: Database) -> ExecuteResult:
     """Execute a SELECT query, with optional JOIN and view support."""
+    if query.aggregates:
+        _check_aggregate_columns(query, _source_columns(query, database))
     # Check if the table name is actually a view.
     view_query = database.get_view(query.table)
     if view_query is not None:
@@ -256,6 +258,37 @@ def _execute_select(query: Query, database: Database) -> ExecuteResult:
         return _execute_select_with_join(query, database, left_table)
 
     return _execute_simple_select(query, left_table, database)
+
+
+def _source_columns(query: Query, database: Database) -> list[str]:
+    """Return the columns the rows behind *query* will have (before its SELECT list).
+
+    Worked out from the schemas, not from the rows, so it is right even
+    when there are no rows at all.
+    """
+    view_query = database.get_view(query.table)
+    if view_query is not None:
+        return _output_columns(view_query, database)
+    left = _get_table(database, query.table, "Query")
+    if query.join is None:
+        return left.schema.column_names
+    right = _get_table(database, query.join.table, "JOIN")
+    return [f"{t.name}.{col}" for t in (left, right) for col in t.schema.column_names]
+
+
+def _output_columns(query: Query, database: Database) -> list[str]:
+    """Return the columns of the rows *query* produces (a view's columns)."""
+    if query.aggregates:
+        return [*query.group_by, *query.columns, *(agg.alias for agg in query.aggregates)]
+    return query.columns or _source_columns(query, database)
+
+
+def _check_aggregate_columns(query: Query, columns: list[str]) -> None:
+    """Raise QueryError if an aggregate names a column the rows will not have."""
+    for agg in query.aggregates:
+        if agg.column != "*" and agg.column not in columns:
+            msg = f"Unknown column {agg.column!r} in {agg.alias}"
+            raise QueryError(msg)
 
 
 def _execute_simple_select(query: Query, table: Table, database: Database) -> ExecuteResult:

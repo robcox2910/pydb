@@ -59,23 +59,16 @@ def group_records(
 def _known_values(agg: AggregateColumn, records: Sequence[RowLike]) -> list[Any]:
     """Return the non-NULL values of the aggregated column.
 
-    Raises:
-        QueryError: If the column does not exist.
-
+    The executor has already checked that the column exists.
     """
-    try:
-        values = [r[agg.column] for r in records]
-    except KeyError:
-        msg = f"Unknown column {agg.column!r} in {agg.alias}"
-        raise QueryError(msg) from None
-    return [v for v in values if v is not None]
+    return [v for v in (r[agg.column] for r in records) if v is not None]
 
 
 def compute_aggregate(agg: AggregateColumn, records: Sequence[RowLike]) -> Value:
     """Compute a single aggregate function over a group of records.
 
     Raises:
-        QueryError: If the column is unknown, or SUM / AVG meets dates.
+        QueryError: If SUM / AVG meets dates.
 
     """
     if agg.function is AggFunc.COUNT and agg.column == "*":
