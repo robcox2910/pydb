@@ -255,6 +255,7 @@ E         - (1, {'': '\r'})], 2, [])
 E         ?           --
 E         + (1, {'': ''})], 2, [])
 E       Failing test case: test_save_then_load_gives_back_the_same_table(
+E           # The test always failed when commented parts were varied together.
 E           table=StoredTable(name='',
 E            schema=Schema([:TEXT]),
 E            records=[Record(record_id=1, data={'': '\r'})],
@@ -335,15 +336,28 @@ The fixes:
 ```
 
 in the storage engine, and in the serializer a small helper,
-`_refuse_malformed`, that turns any `TypeError`, `ValueError`,
+`_refuse_malformed`, that turns any `KeyError`, `TypeError`, `ValueError`,
 `OverflowError` or `SchemaError` raised while reading a file into a
-clear `SerializationError`. Each shrunk input is now an ordinary example
-test in `tests/test_storage.py` and `tests/test_serializer.py`, so these
-bugs can't sneak back in.
+clear `SerializationError`.
+
+Each shrunk input is now an ordinary example test, so these bugs can't
+sneak back in, even if someone deletes the property. Here's the one in
+`tests/test_storage.py`:
+
+```python
+    def test_load_file_that_is_not_text_raises(self, tmp_path: Path) -> None:
+        engine = StorageEngine(data_dir=tmp_path)
+        (tmp_path / "bad.json").write_bytes(b"\x80")
+        with pytest.raises(StorageError, match="Failed to read"):
+            engine.load_table("bad")
+```
+
+The same gap was hiding in checkpoints and in the write-ahead log, which
+also read their files as UTF-8 text. They're fixed and pinned too.
 
 ## Run It Yourself
 
-Run just the property tests and the model checks (100 examples each, the
+Run just the property tests, and the model checks (100 examples each, the
 same every time):
 
 ```bash

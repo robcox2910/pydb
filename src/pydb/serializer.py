@@ -24,9 +24,10 @@ class SerializationError(PyDBError):
 
 
 # What Python raises when a file has the right labels but the wrong things
-# under them: a number where a list belongs (TypeError), text where a number
-# belongs (ValueError), ``Infinity`` as a record ID (OverflowError), a
-# schema with no columns or a bad date (SchemaError).
+# under them: a column with no "name" (KeyError), a number where a list
+# belongs (TypeError), text where a number belongs (ValueError),
+# ``Infinity`` as a record ID (OverflowError), a schema with no columns or a
+# bad date (SchemaError).
 _MALFORMED = (KeyError, TypeError, ValueError, OverflowError, SchemaError)
 
 

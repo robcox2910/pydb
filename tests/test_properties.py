@@ -118,6 +118,7 @@ def stored_tables(draw: st.DrawFn) -> StoredTable:
         Record(row + 1, {column.name: values[row] for column, values in filled})
         for row in range(row_count)
     ]
+    # The next ID must be past every record ID already handed out.
     next_id = draw(st.integers(min_value=row_count + 1))
     indexes = draw(st.lists(st.tuples(st.text(), st.sampled_from(schema.column_names))))
     return StoredTable(draw(st.text()), schema, records, next_id, indexes)
@@ -189,7 +190,11 @@ def leaf_depths(node: BTreeNode, depth: int = 0) -> set[int]:
 
 def drawers_below(node: BTreeNode) -> list[BTreeNode]:
     """Return every drawer (node) under ``node``, not counting ``node`` itself."""
-    return [n for child in node.children for n in [child, *drawers_below(child)]]
+    drawers: list[BTreeNode] = []
+    for child in node.children:
+        drawers.append(child)
+        drawers.extend(drawers_below(child))
+    return drawers
 
 
 # --- Save and load: whatever you save comes back -------------------------------
@@ -241,5 +246,6 @@ def test_btree_stays_sorted_and_balanced(order: int, added: list[int], removed: 
     assert len(leaf_depths(tree.root)) == 1
     # No drawer is over-full, and none but the top one is less than half full.
     assert len(tree.root.keys) <= order - 1
+    # The fewest keys a drawer may hold: half the order, rounded up, minus one.
     half_full = (order + 1) // 2 - 1
     assert all(half_full <= len(node.keys) <= order - 1 for node in drawers_below(tree.root))
