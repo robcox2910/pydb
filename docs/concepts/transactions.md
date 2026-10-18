@@ -1,3 +1,8 @@
+---
+title: "How database transactions work: commit and rollback"
+description: "How a transaction groups changes so they all happen or none do, with commit and rollback, explained simply with a working database in Python."
+---
+
 # Transactions
 
 ## The "No Take-Backs" Rule (With a Safety Net)

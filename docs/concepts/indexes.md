@@ -1,3 +1,8 @@
+---
+title: "How database indexes work: B-trees explained"
+description: "How a database index makes lookups fast, and how a B-tree keeps it sorted, explained simply with a working SQL database written in Python."
+---
+
 # Indexes
 
 ## The Back of the Textbook
