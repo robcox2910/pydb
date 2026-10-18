@@ -361,6 +361,19 @@ class TestRecoveryFromCheckpoint:
         with pytest.raises(RecoveryError, match="cards"):
             _open(tmp_path)
 
+    def test_snapshot_that_is_not_text_is_an_error(self, tmp_path: Path) -> None:
+        """Refuse to open, with RecoveryError, when a snapshot isn't UTF-8 text.
+
+        The same gap the property tests found in the storage engine: the one
+        byte 0x80 made opening crash with UnicodeDecodeError.
+        """
+        with _open(tmp_path) as db:
+            db.create_table("cards", _schema())
+        for path in (tmp_path / SNAPSHOT_DIR).iterdir():
+            path.write_bytes(b"\x80")
+        with pytest.raises(RecoveryError, match="cards"):
+            _open(tmp_path)
+
     def test_bad_checkpoint_file_is_an_error(self, tmp_path: Path) -> None:
         """Refuse to open with a checkpoint.json that can't be read."""
         with _open(tmp_path) as db:

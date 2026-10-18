@@ -180,7 +180,7 @@ class Checkpointer:
         """Load one listed snapshot."""
         try:
             stored = deserialize_table((self.folder / SNAPSHOT_DIR / file).read_text("utf-8"))
-        except (OSError, SerializationError) as exc:
+        except (OSError, UnicodeDecodeError, SerializationError) as exc:
             msg = f"Cannot load the snapshot {file!r} of table {name!r}: {exc!r}"
             raise RecoveryError(msg) from exc
         return Table.from_stored(

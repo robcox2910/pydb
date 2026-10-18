@@ -144,6 +144,17 @@ class TestLoadErrors:
         with pytest.raises(StorageError, match="Corrupted"):
             engine.load_table("bad")
 
+    def test_load_file_that_is_not_text_raises(self, tmp_path: Path) -> None:
+        """A file that isn't UTF-8 text at all is refused with StorageError.
+
+        Found by the property tests: the one byte 0x80 made loading crash
+        with UnicodeDecodeError.
+        """
+        engine = StorageEngine(data_dir=tmp_path)
+        (tmp_path / "bad.json").write_bytes(b"\x80")
+        with pytest.raises(StorageError, match="Failed to read"):
+            engine.load_table("bad")
+
 
 class TestDeleteTable:
     """Verify table deletion from disk."""

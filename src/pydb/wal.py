@@ -102,15 +102,17 @@ class WriteAheadLog:
             A list of log entry dicts, in order.
 
         Raises:
-            WALError: If an entry *before* the last line is damaged. A
-                damaged last line is expected after a crash mid-write (a
-                "torn" write) and is skipped; damage anywhere else means
-                the log can't be trusted.
+            WALError: If an entry *before* the last line is damaged (not
+                JSON, or not even UTF-8 text). A damaged last line is
+                expected after a crash mid-write (a "torn" write) and is
+                skipped; damage anywhere else means the log can't be trusted.
 
         """
         if not self._log_path.exists():
             return []
-        lines = self._log_path.read_text(encoding="utf-8").splitlines()
+        # Read bytes and decode line by line: a torn write can stop half-way
+        # through a character, and that should only spoil its own line.
+        lines = self._log_path.read_bytes().splitlines()
         while lines and not lines[-1].strip():
             lines.pop()
         entries: list[dict[str, str | dict[str, str]]] = []
@@ -119,8 +121,8 @@ class WriteAheadLog:
             if not stripped:
                 continue
             try:
-                entries.append(json.loads(stripped))
-            except json.JSONDecodeError as exc:
+                entries.append(json.loads(stripped.decode("utf-8")))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 if number == len(lines):
                     break  # torn final write from a crash -- safe to drop
                 msg = f"WAL is corrupt at line {number}"

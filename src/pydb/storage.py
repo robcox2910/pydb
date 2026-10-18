@@ -127,7 +127,7 @@ class StorageEngine:
 
         try:
             json_str = file_path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:  # missing, unreadable, or not text
             msg = f"Failed to read table {name!r}: {exc}"
             raise StorageError(msg) from exc
 

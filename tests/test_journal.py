@@ -285,6 +285,12 @@ class TestLsnOrder:
         line = b"%d %08x %s\n" % (len(body), zlib.crc32(body), body)
         assert decode_entries(line) == ([], 0)
 
+    def test_change_with_a_malformed_schema_is_unreadable(self) -> None:
+        """Treat a change whose schema has no columns as a bad line, not an error."""
+        body = b'{"lsn":1,"changes":[{"k":"create_table","t":"cards","schema":{"columns":[]}}]}'
+        line = b"%d %08x %s\n" % (len(body), zlib.crc32(body), body)
+        assert decode_entries(line) == ([], 0)
+
 
 class TestWriteFailure:
     """Check that failed appends never corrupt the journal."""
