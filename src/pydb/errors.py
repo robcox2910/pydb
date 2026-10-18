@@ -20,3 +20,7 @@ class SchemaError(PyDBError):
 
 class RecordNotFoundError(PyDBError):
     """Raise when a record with the given ID does not exist."""
+
+
+class QueryError(PyDBError):
+    """Raise when a query or statement cannot be executed."""

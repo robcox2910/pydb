@@ -7,8 +7,9 @@ which columns, which rows match, what order, and how many.
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
+from pydb.nulls import UNKNOWN, Truth, and3, in3, is_true, not3, or3
 from pydb.record import Record, Value
 
 
@@ -22,12 +23,55 @@ class Operator(StrEnum):
     LT = "<"
     LE = "<="
     IN = "IN"
+    IS_NULL = "IS NULL"
+    IS_NOT_NULL = "IS NOT NULL"
+
+
+class RowLike(Protocol):
+    """Anything that answers ``row[column_name]`` with a value.
+
+    Both ``Record`` objects (from a single table) and plain dicts (from
+    JOINs, views or aggregate results) fit this shape, so a WHERE clause
+    can be tested against either.
+    """
+
+    def __getitem__(self, key: str, /) -> Value:
+        """Return the value stored under *key*."""
+        ...
+
+
+def compare3(left: Any, op: Operator, right: Any) -> Truth:
+    """Compare two values in three-valued logic (see ``pydb.nulls``).
+
+    This is the single source of truth for all comparison logic in PyDB.
+    ``IS NULL`` and ``IS NOT NULL`` always answer TRUE or FALSE; ``IN``
+    follows ``in3``; every other comparison with a NULL on either side is
+    UNKNOWN -- even ``NULL = NULL``.
+
+    Args:
+        left: The left-hand value.
+        op: The comparison operator.
+        right: The right-hand value (ignored by IS NULL / IS NOT NULL).
+
+    Returns:
+        True, False, or None (UNKNOWN).
+
+    """
+    match op:
+        case Operator.IS_NULL:
+            return left is None
+        case Operator.IS_NOT_NULL:
+            return left is not None
+        case Operator.IN:
+            return in3(left, right)
+        case _ if left is None or right is None:
+            return UNKNOWN
+        case _:
+            return _compare_known(left, op, right)
 
 
 def compare_values(left: Any, op: Operator, right: Any) -> bool:
-    """Compare two values using the given operator.
-
-    This is the single source of truth for all comparison logic in PyDB.
+    """Return whether a comparison is TRUE (UNKNOWN counts as not true).
 
     Args:
         left: The left-hand value.
@@ -35,9 +79,14 @@ def compare_values(left: Any, op: Operator, right: Any) -> bool:
         right: The right-hand value.
 
     Returns:
-        True if the comparison holds.
+        True only if the comparison is TRUE.
 
     """
+    return is_true(compare3(left, op, right))
+
+
+def _compare_known(left: Any, op: Operator, right: Any) -> bool:
+    """Compare two non-NULL values."""
     match op:
         case Operator.EQ:
             return left == right
@@ -51,8 +100,6 @@ def compare_values(left: Any, op: Operator, right: Any) -> bool:
             return left < right
         case Operator.LE:
             return left <= right
-        case Operator.IN:
-            return left in right
         case _:
             msg = f"Unknown operator: {op}"
             raise ValueError(msg)
@@ -97,6 +144,10 @@ class Condition:
     operator: Operator
     value: Value | Subquery | list[Value]
 
+    def evaluate(self, row: RowLike) -> Truth:
+        """Return TRUE, FALSE or UNKNOWN for *row*."""
+        return compare3(row[self.column], self.operator, self.value)
+
     def matches(self, record: Record) -> bool:
         """Check whether a record satisfies this condition.
 
@@ -104,10 +155,10 @@ class Condition:
             record: The record to test.
 
         Returns:
-            True if the record matches the condition.
+            True only if the condition is TRUE (not UNKNOWN) for the record.
 
         """
-        return compare_values(record[self.column], self.operator, self.value)
+        return is_true(self.evaluate(record))
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,12 +173,16 @@ class And:
 
     """
 
-    left: Condition | And | Or
-    right: Condition | And | Or
+    left: WhereClause
+    right: WhereClause
+
+    def evaluate(self, row: RowLike) -> Truth:
+        """Return ``left AND right`` for *row* in three-valued logic."""
+        return and3(self.left.evaluate(row), self.right.evaluate(row))
 
     def matches(self, record: Record) -> bool:
         """Check whether a record satisfies both conditions."""
-        return self.left.matches(record) and self.right.matches(record)
+        return is_true(self.evaluate(record))
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,16 +197,43 @@ class Or:
 
     """
 
-    left: Condition | And | Or
-    right: Condition | And | Or
+    left: WhereClause
+    right: WhereClause
+
+    def evaluate(self, row: RowLike) -> Truth:
+        """Return ``left OR right`` for *row* in three-valued logic."""
+        return or3(self.left.evaluate(row), self.right.evaluate(row))
 
     def matches(self, record: Record) -> bool:
         """Check whether a record satisfies at least one condition."""
-        return self.left.matches(record) or self.right.matches(record)
+        return is_true(self.evaluate(record))
+
+
+@dataclass(frozen=True, slots=True)
+class Not:
+    """Turn a condition around: TRUE becomes FALSE and FALSE becomes TRUE.
+
+    UNKNOWN stays UNKNOWN -- if we don't know whether a box holds 5, we
+    don't know whether it doesn't, either.
+
+    Args:
+        operand: The condition to negate.
+
+    """
+
+    operand: WhereClause
+
+    def evaluate(self, row: RowLike) -> Truth:
+        """Return ``NOT operand`` for *row* in three-valued logic."""
+        return not3(self.operand.evaluate(row))
+
+    def matches(self, record: Record) -> bool:
+        """Check whether a record makes the operand FALSE."""
+        return is_true(self.evaluate(record))
 
 
 # Union type for any filter expression.
-WhereClause = Condition | And | Or
+WhereClause = Condition | And | Or | Not
 
 
 @dataclass(frozen=True, slots=True)

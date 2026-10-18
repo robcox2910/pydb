@@ -35,6 +35,23 @@ GROUP BY type
 | `MIN(col)` | Find the smallest value | Weakest card in each pile? |
 | `MAX(col)` | Find the largest value | Strongest card in each pile? |
 
+## Skipping the Unknowns
+
+What if some cards have no power written on them -- their power is
+[NULL](null.md)? You can't add "unknown" to a total, so:
+
+- `COUNT(*)` counts every row (every card on the table).
+- `COUNT(power)` counts only the cards whose power is known.
+- `SUM`, `AVG`, `MIN` and `MAX` skip the NULLs.
+- If there is no known value at all -- every power is NULL, or the pile is
+  empty -- `COUNT` gives 0 and the others give NULL. The total of nothing
+  we know is itself unknown.
+
+```sql
+SELECT COUNT(*), COUNT(power), AVG(power) FROM cards
+-- AVG is worked out from the known powers only.
+```
+
 ## GROUP BY: Making the Piles
 
 Without `GROUP BY`, an aggregate function works on the **entire table**:
@@ -52,6 +69,8 @@ SELECT type, COUNT(*) FROM cards GROUP BY type
 -- How many cards of each type?
 ```
 
+Cards whose type is NULL all go into one pile of their own.
+
 ## HAVING: Throwing Away Small Piles
 
 `HAVING` is like `WHERE`, but for groups instead of individual rows.
@@ -67,6 +86,10 @@ HAVING COUNT(*) > 1
 Think of it this way:
 - **WHERE** filters individual cards *before* sorting into piles.
 - **HAVING** filters entire piles *after* counting.
+
+HAVING uses the same three-valued logic as WHERE: `HAVING SUM(power) > 100`
+leaves out a pile whose sum is NULL. Ask `HAVING SUM(power) IS NULL` to
+find those piles.
 
 ## Aggregates Without GROUP BY
 
@@ -89,6 +112,8 @@ result row.
 - HAVING filters groups after aggregation.
 - Aggregates without GROUP BY work on the whole table.
 - Mixing aggregate functions with regular columns (via GROUP BY) works.
+- NULLs are skipped, and an aggregate over no known values is NULL
+  (`COUNT` is 0).
 
 ## Next Up
 

@@ -32,18 +32,18 @@ class TestAggregateEdgeCases:
         assert rows[0]["COUNT(*)"] == ZERO_ROWS
 
     def test_sum_empty_table(self, tmp_path: Path) -> None:
-        """SUM on an empty table should return 0."""
+        """SUM on an empty table is NULL (the total of nothing known is unknown)."""
         db = Database(path=tmp_path)
         execute(parse_sql("CREATE TABLE t (val INTEGER)"), db)
         rows = execute(parse_sql("SELECT SUM(val) FROM t"), db)
-        assert rows[0]["SUM(val)"] == ZERO_ROWS
+        assert rows[0]["SUM(val)"] is None
 
     def test_avg_empty_table(self, tmp_path: Path) -> None:
-        """AVG on an empty table should return 0.0 (not divide by zero)."""
+        """AVG on an empty table is NULL (and does not divide by zero)."""
         db = Database(path=tmp_path)
         execute(parse_sql("CREATE TABLE t (val INTEGER)"), db)
         rows = execute(parse_sql("SELECT AVG(val) FROM t"), db)
-        assert rows[0]["AVG(val)"] == 0.0
+        assert rows[0]["AVG(val)"] is None
 
     def test_count_after_where_filters_all(self, tmp_path: Path) -> None:
         """COUNT after WHERE that matches nothing should return 0."""

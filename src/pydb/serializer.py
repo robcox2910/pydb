@@ -22,18 +22,18 @@ class SerializationError(PyDBError):
     """Raise when data cannot be serialized or deserialized."""
 
 
-def _value_to_json(value: Value) -> str | int | float | bool:
+def _value_to_json(value: Value) -> str | int | float | bool | None:
     """Convert a record value to a JSON-safe Python type.
 
-    Text, numbers and booleans are already JSON-safe; dates and timestamps
-    become ISO text.
+    Text, numbers and booleans are already JSON-safe, and NULL (``None``)
+    becomes JSON ``null``; dates and timestamps become ISO text.
     """
     if isinstance(value, date):
         return to_iso(value)
     return value
 
 
-def _value_from_json(raw: str | int | float | bool, data_type: DataType) -> Value:
+def _value_from_json(raw: str | int | float | bool | None, data_type: DataType) -> Value:
     """Convert a JSON value back to the correct Python type.
 
     JSON doesn't distinguish int from float in all cases, so we cast
@@ -44,9 +44,11 @@ def _value_from_json(raw: str | int | float | bool, data_type: DataType) -> Valu
         data_type: The expected data type from the schema.
 
     Returns:
-        The value cast to the correct Python type.
+        The value cast to the correct Python type (``null`` stays NULL).
 
     """
+    if raw is None:
+        return None
     match data_type:
         case DataType.TEXT:
             return str(raw)
@@ -55,9 +57,7 @@ def _value_from_json(raw: str | int | float | bool, data_type: DataType) -> Valu
         case DataType.FLOAT:
             return float(raw)
         case DataType.BOOLEAN:
-            if not isinstance(raw, bool):
-                return bool(raw)
-            return raw
+            return raw if isinstance(raw, bool) else bool(raw)
         case DataType.DATE | DataType.TIMESTAMP:
             return cast(Value, from_iso(str(raw), data_type))
         case _:  # pragma: no cover
@@ -181,7 +181,7 @@ def deserialize_record(
         if col_name not in type_map:
             msg = f"Unknown column {col_name!r} not in schema"
             raise SerializationError(msg)
-        if not isinstance(raw_value, str | int | float | bool):
+        if raw_value is not None and not isinstance(raw_value, str | int | float | bool):
             msg = f"Unsupported value type for column {col_name!r}: {type(raw_value).__name__}"
             raise SerializationError(msg)
         values[col_name] = _value_from_json(raw_value, type_map[col_name])

@@ -1,7 +1,8 @@
 """Result formatter -- display query results as pretty tables.
 
 Turns a list of row dictionaries into a human-readable ASCII table,
-just like the output you see in real database tools.
+just like the output you see in real database tools. A NULL is shown as
+``NULL``.
 """
 
 from collections.abc import Sequence
@@ -52,6 +53,8 @@ def format_results(rows: Sequence[dict[str, Value]], columns: list[str] | None =
 
 def _format_value(value: Value | str) -> str:
     """Convert a value to its display string."""
+    if value is None:
+        return "NULL"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, date):

@@ -30,7 +30,8 @@ needs, ``"id"``, ``"data"``, ``"schema"`` (see ``serialize_schema``) and
 Value tagging
 -------------
 
-Strings, integers, floats and booleans are plain JSON. Dates and timestamps
+Strings, integers, floats and booleans are plain JSON, and NULL is JSON
+``null``. Dates and timestamps
 are *tagged*: ``{"$date": "2026-10-17"}`` and ``{"$ts": "2026-10-17T12:30:00Z"}``.
 Only a dict with exactly one such key is a tag; change data is never a dict
 otherwise, so a user's *string* ``"$date"`` round-trips untouched.

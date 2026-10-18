@@ -82,7 +82,7 @@ SELECT name, power FROM cards WHERE power >= 50 ORDER BY name DESC LIMIT 5
 
 | Token | Examples | Meaning |
 |-------|----------|---------|
-| `KEYWORD` | SELECT, FROM, WHERE | SQL reserved words |
+| `KEYWORD` | SELECT, FROM, WHERE, IS, NULL | SQL reserved words (they can't be used as names) |
 | `IDENTIFIER` | name, cards, power | Table/column names |
 | `INTEGER` | 42, 100, 0 | Whole numbers |
 | `FLOAT` | 3.14, 0.5 | Decimal numbers |

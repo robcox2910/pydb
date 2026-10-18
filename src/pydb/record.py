@@ -8,8 +8,8 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from typing import Any
 
-# Type alias for values stored in a record.
-Value = str | int | float | bool | date | datetime
+# Type alias for values stored in a record. ``None`` is NULL: "we don't know".
+Value = str | int | float | bool | date | datetime | None
 
 
 class Record:

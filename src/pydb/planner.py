@@ -36,7 +36,8 @@ def plan_query(query: Query, table: Table) -> QueryPlan:
 
     The planner checks if the WHERE clause uses ``=`` on a column that
     has an index. If so, it chooses an index lookup. Otherwise, it
-    falls back to a full table scan.
+    falls back to a full table scan. ``col = NULL`` is never TRUE and an
+    index holds no NULLs, so neither it nor ``IS NULL`` uses an index.
 
     Args:
         query: The query to plan.
@@ -50,6 +51,7 @@ def plan_query(query: Query, table: Table) -> QueryPlan:
         query.where is not None
         and isinstance(query.where, Condition)
         and query.where.operator == Operator.EQ
+        and query.where.value is not None  # col = NULL is never TRUE: no lookup
     ):
         idx = table.get_index_for_column(query.where.column)
         if idx is not None:

@@ -52,6 +52,7 @@ starting with the simplest possible thing: a **record**.
 | **Transactions** | The "no take-backs" rule | Groups of changes that either all happen or none do |
 | **Outbox** | All-or-nothing shopping | Atomic DB + MQ operations |
 | **Dates and Times** | Calendars and one shared clock | `DATE` and `TIMESTAMP` columns, stored in UTC |
+| **NULL** | An empty box with a question mark | A value that is unknown -- not zero, not blank |
 | **Journal** | A diary you write in *before* you act | Makes every commit survive a crash |
 | **Checkpoint** | Tidying the diary into a photo album | Keeps the journal short |
 | **Lock** | One pen, many writers | Lets threads and programs take turns safely |
@@ -69,15 +70,17 @@ can trust. Read the pages in order:
 
 1. [Dates and Times](concepts/dates-and-times.md) -- calendars, clocks, and
    why every timestamp is stored in UTC.
-2. [The Journal](concepts/journal.md) -- the diary you write in *before* you
+2. [NULL](concepts/null.md) -- the empty box with a question mark: a run
+   that hasn't ended yet has no end time.
+3. [The Journal](concepts/journal.md) -- the diary you write in *before* you
    do something: `Database(path, journal=True)`.
-3. [Crash Recovery](concepts/crash-recovery.md) -- waking up and reading
+4. [Crash Recovery](concepts/crash-recovery.md) -- waking up and reading
    yesterday's diary.
-4. [Checkpoints](concepts/checkpoints.md) -- tidying the diary into the
+5. [Checkpoints](concepts/checkpoints.md) -- tidying the diary into the
    photo album.
-5. [Torn Writes](concepts/torn-writes.md) -- a half-written diary line, and
+6. [Torn Writes](concepts/torn-writes.md) -- a half-written diary line, and
    the checksum that spots it.
-6. [Locks and Threads](concepts/locks-and-threads.md) -- one pen, many
+7. [Locks and Threads](concepts/locks-and-threads.md) -- one pen, many
    writers, taking turns.
 
 Then try the examples:

@@ -13,6 +13,7 @@ from pydb.query import (
     And,
     Condition,
     JoinClause,
+    Not,
     Operator,
     Or,
     OrderBy,
@@ -523,6 +524,9 @@ class _Parser:
         """Parse a single comparison condition: column op value.
 
         Supports:
+        - Negation: NOT condition (binds tighter than AND / OR)
+        - Grouping: ( condition [AND|OR ...] )
+        - NULL tests: column IS NULL, column IS NOT NULL
         - Regular: column > 50
         - Aggregate in HAVING: COUNT(*) > 1
         - IN subquery: column IN (SELECT ...)
@@ -530,11 +534,43 @@ class _Parser:
         - Range: column BETWEEN low AND high (inclusive; becomes >= AND <=)
         """
         token = self._peek()
+        if token.token_type == TokenType.KEYWORD and token.value == "NOT":
+            self._advance()
+            return Not(self._parse_condition())
+        if token.token_type == TokenType.LPAREN:
+            self._advance()
+            grouped = self._parse_where()
+            self._expect(TokenType.RPAREN)
+            return grouped
         if token.token_type == TokenType.KEYWORD and token.value in _AGG_FUNCS:
             agg = self._parse_aggregate()
             column = agg.alias
         else:
             column = self._parse_qualified_name()
+
+        # ``x NOT IN ...`` / ``x NOT BETWEEN ...`` mean ``NOT (x IN ...)`` / ``NOT (x BETWEEN ...)``.
+        if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "NOT":
+            self._advance()
+            following = self._peek()
+            if following.token_type != TokenType.KEYWORD or following.value not in (
+                "IN",
+                "BETWEEN",
+            ):
+                msg = f"Expected IN or BETWEEN after NOT, got {following.value!r}"
+                raise ParseError(msg)
+            return Not(self._parse_condition_tail(column))
+        return self._parse_condition_tail(column)
+
+    def _parse_condition_tail(self, column: str) -> WhereClause:
+        """Parse what follows the column: IS [NOT] NULL, IN, BETWEEN, or op value."""
+        if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "IS":
+            self._advance()
+            negated = self._peek().token_type == TokenType.KEYWORD and self._peek().value == "NOT"
+            if negated:
+                self._advance()
+            self._expect(TokenType.KEYWORD, "NULL")
+            operator = Operator.IS_NOT_NULL if negated else Operator.IS_NULL
+            return Condition(column=column, operator=operator, value=None)
 
         # Handle IN (SELECT ...) or IN (val, val, ...).
         if self._peek().token_type == TokenType.KEYWORD and self._peek().value == "IN":
@@ -581,7 +617,7 @@ class _Parser:
         )
 
     def _parse_value(self) -> Value:
-        """Parse a literal value (string, number, boolean, or DATE/TIMESTAMP literal)."""
+        """Parse a literal value (string, number, boolean, NULL, or DATE/TIMESTAMP literal)."""
         token = self._advance()
         if (
             token.token_type == TokenType.IDENTIFIER
@@ -604,6 +640,8 @@ class _Parser:
                 return True
             case TokenType.KEYWORD if token.value == "FALSE":
                 return False
+            case TokenType.KEYWORD if token.value == "NULL":
+                return None
             case _:
                 msg = f"Expected a value, got {token.token_type.value} ({token.value!r})"
                 raise ParseError(msg)

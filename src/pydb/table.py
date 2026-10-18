@@ -226,6 +226,7 @@ class Table:
     def insert(self, values: Mapping[str, Value]) -> Record:
         """Insert a new record into the table.
 
+        A nullable column left out of *values* is stored as NULL (``None``).
         The schema validates the values before insertion. The table assigns
         the next available ID automatically. All indexes are updated.
 
@@ -239,7 +240,7 @@ class Table:
             SchemaError: If the values don't conform to the table's schema.
 
         """
-        values = self._schema.coerce(values)
+        values = self._schema.fill_nulls(self._schema.coerce(values))
         self._schema.validate(values)
         self._schema.check_constraints(values, unique=self._rows.unique)
         record_id = self._rows.next_id
