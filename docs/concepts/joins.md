@@ -61,6 +61,13 @@ This is called a **nested loop join** -- the simplest way to do it. Real
 databases have faster methods, but the idea is always the same: find
 matching rows across tables.
 
+## NULL Keys Never Match
+
+What if a Pokémon's trainer is [NULL](null.md) -- nobody knows who owns it?
+`NULL = 'Ash'` is UNKNOWN, not TRUE, so that Pokémon is left out of the
+JOIN. Even two NULLs don't match each other: two unknown trainers might be
+different people.
+
 ## Dot Notation
 
 When two tables have columns with the same name, you need to say *which*
@@ -81,6 +88,7 @@ whose name you're talking about.
 - ORDER BY works on joined results.
 - LIMIT works on joined results.
 - Missing table in JOIN raises an error.
+- Rows with a NULL join key never match, not even each other.
 
 ## Next Up
 

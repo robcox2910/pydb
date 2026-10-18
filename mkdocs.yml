@@ -42,6 +42,7 @@ nav:
     - Aggregations: concepts/aggregations.md
     - Query Planner: concepts/query-planner.md
     - Constraints: concepts/constraints.md
+    - NULL: concepts/null.md
     - Subqueries: concepts/subqueries.md
     - Views: concepts/views.md
     - Transactions: concepts/transactions.md

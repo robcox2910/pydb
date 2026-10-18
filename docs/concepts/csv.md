@@ -47,6 +47,16 @@ The CSV header must match the table's column names. Values are
 automatically converted to the right type -- "55" becomes the integer
 `55`, "true" becomes the boolean `True`.
 
+## Empty Fields and NULL
+
+A CSV file has no way to write "unknown", so a [NULL](null.md) is
+exported as an **empty field** (nothing between the commas). Importing,
+an empty field becomes NULL -- except in a TEXT column. There it stays
+the empty string `""`, because in a CSV file an empty string and a NULL
+look exactly the same, and PyDB can't tell which one you meant. An empty
+field in a NOT NULL column that isn't TEXT is an error, and a nullable
+column missing from the header is NULL in every imported row.
+
 ## What We Test
 
 - Exporting creates a valid CSV file with headers.
@@ -54,6 +64,8 @@ automatically converted to the right type -- "55" becomes the integer
 - Round-trip (export → import) preserves all data.
 - Missing files raise a clear error.
 - Wrong types raise a clear error with the row number.
+- NULL is exported as an empty field and imported back as NULL (TEXT
+  columns get `""`).
 
 ## Next Up
 

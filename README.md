@@ -24,6 +24,8 @@ executor uses them automatically:
   with one look-up in a register of values, not by reading every row)
 - **Dates and times** -- `DATE` and `TIMESTAMP` columns (stored in UTC),
   with `DATE '…'` / `TIMESTAMP '…'` literals in SQL
+- **NULL** -- nullable columns, `IS NULL` / `IS NOT NULL`, and
+  three-valued logic (TRUE / FALSE / UNKNOWN) in WHERE, ON and HAVING
 - **Transactions** -- commit/rollback via an undo log (each change notes
   how to undo itself, so no table is ever copied), also as
   `with Transaction(db):`

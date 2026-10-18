@@ -127,6 +127,15 @@ the index keeps their record IDs **in ascending order**, like a register
 listing pupils by seat number: `idx.find("Pikachu")` gives `[1, 4, 9]`,
 however the rows were added, changed, removed or rolled back.
 
+## NULLs Stay Out of the Index
+
+An index is a sorted list, and an unknown value -- a [NULL](null.md) --
+has no place in one: is "unknown" bigger or smaller than 5? A search for
+`col = NULL` could never succeed anyway, because that comparison is
+UNKNOWN, never TRUE. So PyDB **never puts a NULL in an index**: a row
+whose value is NULL simply has no entry, `index.find(None)` returns `[]`,
+and the planner never uses an index for `col = NULL`.
+
 ## What We Test
 
 - Inserting keys keeps the tree sorted and balanced.

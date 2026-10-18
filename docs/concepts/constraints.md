@@ -46,28 +46,26 @@ INSERT INTO players (name, score) VALUES ('Alice', 100)
 Think of it like a form where certain fields are marked with a red
 asterisk (*) -- you must fill them in.
 
-### An honest note about NULL
+### NOT NULL and NULL
 
-Real databases let a column hold **NULL** -- a special "no value here"
-marker -- and NOT NULL is the rule that forbids it. **PyDB has no NULL
-yet.** Every column always needs a value, so this:
+A column may hold **NULL** -- the empty box with a question mark, meaning
+"we don't know" (see [NULL](null.md)). NOT NULL is the rule that forbids
+it. A column *without* NOT NULL may be left out, and is stored as NULL:
 
 ```sql
--- This fails in PyDB: 'score' is missing.
+-- This works: 'score' is not NOT NULL, so it becomes NULL.
 INSERT INTO players (name) VALUES ('Alice')
--- Error: Missing required column(s): score
+
+-- This fails: 'name' is NOT NULL.
+INSERT INTO players (score) VALUES (100)
+-- Error: Missing required column(s): name
+
+INSERT INTO players VALUES (NULL, 100)
+-- Error: Column 'name' cannot be NULL
 ```
 
-is rejected whether or not the column is NOT NULL. In other words,
-right now *every* column behaves as if it were required. The `NOT NULL`
-keyword is parsed and remembered, but because nothing can ever be NULL,
-it has no extra work to do.
-
-> **Try it yourself!** Adding real NULL support is a great exercise:
-> teach the tokenizer/parser a `NULL` literal, let a value be `None`,
-> allow the schema to skip missing optional columns, and *then* NOT NULL
-> becomes the rule that stops NULLs sneaking in. See if you can wire it
-> all the way through.
+UPDATE follows the same rule: `UPDATE players SET score = NULL` is fine,
+`SET name = NULL` is refused.
 
 ## UNIQUE
 
@@ -105,15 +103,18 @@ rolled back by a transaction.
 
 Two values count as the same exactly when Python's `==` says so. That's
 why, in a FLOAT column, `1` and `1.0` clash (`1` is widened to `1.0`
-anyway). A missing value is never registered, and neither is NaN ("not a
-number") -- `NaN == NaN` is False, so NaNs never clash.
+anyway). A NULL is never registered, and neither is NaN ("not a
+number") -- `NaN == NaN` is False, so NaNs never clash. That means a
+UNIQUE column may hold any number of NULLs: two unknown values are not
+known to be the same.
 
 ## What We Test
 
 - PRIMARY KEY rejects duplicate values.
 - UNIQUE rejects duplicate values (on INSERT and UPDATE).
 - Updating a row without changing its unique value is allowed.
-- Every column requires a value (PyDB has no NULL yet).
+- NOT NULL and PRIMARY KEY columns refuse NULL; other columns accept it,
+  and a UNIQUE column accepts many NULLs.
 - Constraints are parsed correctly in CREATE TABLE.
 - Clear error messages explain which constraint was violated.
 - The register agrees with the old "compare with every row" check for
