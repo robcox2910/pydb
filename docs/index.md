@@ -62,6 +62,14 @@ starting with the simplest possible thing: a **record**.
 | **Checkpoint** | Tidying the diary into a photo album | Keeps the journal short |
 | **Lock** | One pen, many writers | Lets threads and programs take turns safely |
 
+## Install
+
+```bash
+pip install fromscratch-pydb
+```
+
+Or get the whole series at once with `pip install fromscratch-pystack`. To read the code or run the tests, clone it from [GitHub](https://github.com/robcox2910/pydb).
+
 ## Let's Start!
 
 Head to [Records](concepts/records.md) to build our first piece.
