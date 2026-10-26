@@ -1,5 +1,5 @@
 [project]
-name = "pydb"
+name = "fromscratch-pydb"
 dynamic = ["version"]
 description = "An educational database engine built from scratch in Python"
 readme = "README.md"
