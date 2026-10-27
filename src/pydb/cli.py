@@ -112,8 +112,27 @@ def _execute_sql(sql: str, database: Database) -> str:
     except QueryError as exc:
         return f"Query error: {exc}"
 
-    columns = parsed.columns if isinstance(parsed, Query) and parsed.columns else None
-    return format_results(results, columns=columns)
+    return format_results(results, columns=_display_columns(parsed))
+
+
+def _display_columns(parsed: object) -> list[str] | None:
+    """Return the columns a SELECT asked for, in display order, or None to show every key.
+
+    A grouped query keeps its aggregates (like ``COUNT(*)``) apart from its
+    plain columns, so both lists are shown: plain columns first, then the
+    aggregates, the same order the executor builds each row in.
+
+    Args:
+        parsed: The parsed statement.
+
+    Returns:
+        The column names to show, or None to use each row's own keys.
+
+    """
+    if not isinstance(parsed, Query):
+        return None
+    shown = [*parsed.columns, *(agg.alias for agg in parsed.aggregates)]
+    return shown or None
 
 
 def repl(database: Database) -> None:

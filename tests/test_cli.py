@@ -136,6 +136,16 @@ class TestSQLExecution:
         result = _execute_sql("SELECT * FROM missing", db)
         assert "Query error" in result
 
+    def test_group_by_shows_aggregate_columns(self, tmp_path: Path) -> None:
+        """GROUP BY results show every aggregate column, not just the grouped ones."""
+        db = _make_db(tmp_path)
+        result = _execute_sql("SELECT name, COUNT(*), AVG(power) FROM cards GROUP BY name", db)
+        header = result.splitlines()[1]
+        assert "name" in header
+        assert "COUNT(*)" in header
+        assert "AVG(power)" in header
+        assert "55.0" in result
+
     def test_empty_result(self, tmp_path: Path) -> None:
         """A query with no matches should show empty result."""
         db = _make_db(tmp_path)
